@@ -6,13 +6,30 @@ You are executing the Node team's GPU validation test suite on an OpenShift 4.21
 
 1. Read `node-team/CLAUDE.md` — this is your primary guide. Follow it exactly.
 2. Verify all prerequisites (oc logged in, helm installed, nodes Ready, internet access). If any fail, stop and report.
-3. Execute the full flow:
-   - **Phase 0:** Cluster setup (NFD, GPU operator, ClusterPolicy) — commands are in `node-team/CLAUDE.md`
-   - **Phase 1:** `bash node-team/tests/device-plugin/run-all.sh` — see `node-team/tests/device-plugin/CLAUDE.md` for expected results and troubleshooting
-   - **Transition:** `bash node-team/dra/install.sh` — see `node-team/dra/CLAUDE.md` for troubleshooting
-   - **Phase 2:** `bash node-team/tests/dra/run-all.sh` — see `node-team/tests/dra/CLAUDE.md` for expected results and troubleshooting
-4. If a phase fails, read the relevant CLAUDE.md troubleshooting section, diagnose, fix, and retry before moving on.
-5. Report a final summary: total tests passed, failed, skipped, and any issues encountered.
+3. Execute the full flow interactively — pause at each phase boundary to check in:
+
+   **Phase 0: Cluster Setup**
+   - Run NFD, GPU operator, ClusterPolicy setup from `node-team/CLAUDE.md`
+   - After setup, use `AskUserQuestion`: "Phase 0 complete. Proceed?" with options: Proceed to Phase 1 / Re-verify setup / Stop
+
+   **Phase 1: Device Plugin Tests**
+   - Run `bash node-team/tests/device-plugin/run-all.sh`
+   - Present results table (test name, pass/fail/skip)
+   - If any failures, use `AskUserQuestion`: "Which failed test to investigate?" (list each failed test + "Retry all failures" + "Skip and proceed to DRA transition")
+   - For each investigated test: diagnose using `tests/device-plugin/CLAUDE.md`, then ask: "Retry this test? / Move to next failure / Proceed to transition"
+
+   **Transition: Device Plugin → DRA**
+   - Run `bash node-team/dra/install.sh`
+   - If install fails, use `AskUserQuestion`: "DRA install failed. What to do?" with options: Troubleshoot / Retry install / Stop
+   - On success, ask: "DRA transition complete. Proceed to Phase 2?"
+
+   **Phase 2: DRA Tests**
+   - Run `bash node-team/tests/dra/run-all.sh`
+   - Present results table
+   - If any failures, use `AskUserQuestion`: same pattern as Phase 1 — pick failed tests to investigate/retry
+   - After all failures handled, ask: "Phase 2 done. Rollback DRA? / Keep DRA mode? / File Jira bugs for failures?"
+
+4. Report a final summary: total tests passed, failed, skipped, and any issues encountered.
 
 ## Hardware-specific overrides
 

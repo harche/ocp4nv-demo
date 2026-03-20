@@ -280,3 +280,23 @@ oc logs mps-pod -c mps-ctr0 -n test-dra-mps
   ```
   If `mig.config` is not `all-disabled`, disable it and wait 60s.
 - `GpuConfig` API version mismatch — the opaque parameters use `resource.nvidia.com/v1beta1`. If the DRA driver version doesn't support this, check DRA driver logs.
+
+---
+
+## Interactive Test Review
+
+After running `run-all.sh`, present a results table:
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | test-2.1-dra-deploy | PASS/FAIL/SKIP |
+| ... | ... | ... |
+
+If any tests failed, use `AskUserQuestion` to ask: "Which failed test would you like to investigate?" with options listing each failed test, plus:
+- Retry all failed tests
+- Skip — proceed to wrap-up
+
+For each investigated test:
+1. Show the test output/error
+2. Check the troubleshooting section above for known causes
+3. Use `AskUserQuestion`: "What to do?" with options: Retry this test / Apply suggested fix and retry / Skip this test / Stop

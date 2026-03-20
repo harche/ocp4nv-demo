@@ -63,7 +63,7 @@ Before starting, verify ALL of the following:
 3. **Cluster workers are Ready with A100 GPUs** — run `oc get nodes` and confirm GPU worker nodes show `Ready`
 4. **Internet access from cluster** — workers must pull images from `nvcr.io` (NVIDIA container registry) and the GPU operator downloads drivers from the catalog
 
-If any prerequisite fails, stop and report the issue.
+If any prerequisite fails, use `AskUserQuestion` to report which check(s) failed and ask: "Fix and re-check? / Proceed anyway (risky) / Stop"
 
 ### Phase 0: Cluster Setup (Operators + ClusterPolicy)
 
@@ -123,6 +123,8 @@ oc get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.alloca
 
 **Phase 0 is complete when:** all GPU operator pods are Running AND `nvidia.com/gpu > 0` on GPU workers.
 
+After verifying, use `AskUserQuestion`: "Phase 0 setup complete — all GPU operator pods running and GPUs detected. Proceed to Phase 1?" with options: Proceed to Phase 1 / Re-verify setup / Stop
+
 ---
 
 ### Phase 1: Device Plugin Tests (OCPNODE-4138)
@@ -131,6 +133,10 @@ oc get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.alloca
 bash node-team/tests/device-plugin/run-all.sh
 ```
 Runs 11 tests (1.1–1.11), prints pass/fail/skip summary. See `tests/device-plugin/CLAUDE.md` for expected results and troubleshooting.
+
+**After Phase 1:** Present a results table. If there are failures, use `AskUserQuestion` to ask which failed test(s) to investigate or retry (list each failed test as an option, plus "Retry all failures" and "Skip — proceed to DRA transition"). For each investigated test, diagnose and offer to retry before moving on.
+
+If all tests passed, use `AskUserQuestion`: "Phase 1 passed. Proceed to DRA transition?" with options: Proceed / Re-run Phase 1 / Stop
 
 ---
 
@@ -141,6 +147,8 @@ bash node-team/dra/install.sh
 ```
 Takes 3-5 minutes. See `dra/CLAUDE.md` for troubleshooting if it fails.
 
+**After transition:** If install succeeds, use `AskUserQuestion`: "DRA transition complete. Proceed to Phase 2?" If it fails, ask: "DRA install failed. Troubleshoot? / Retry? / Stop"
+
 ---
 
 ### Phase 2: DRA Tests (OCPNODE-4170)
@@ -149,6 +157,10 @@ Takes 3-5 minutes. See `dra/CLAUDE.md` for troubleshooting if it fails.
 bash node-team/tests/dra/run-all.sh
 ```
 Runs 17 tests (2.1–2.17), prints pass/fail/skip summary. See `tests/dra/CLAUDE.md` for expected results and troubleshooting.
+
+**After Phase 2:** Same interactive pattern as Phase 1 — present results, ask about failures, offer retry/investigate/skip.
+
+After all failures handled, use `AskUserQuestion`: "All phases complete. What next?" with options: Rollback to device-plugin mode / Keep DRA mode / Generate final report
 
 ---
 

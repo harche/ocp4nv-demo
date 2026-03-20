@@ -187,3 +187,23 @@ oc get events -n <namespace> --sort-by=.lastTimestamp | tail -10
 **Common causes:**
 - `Insufficient nvidia.com/gpu`: all GPUs allocated — check for leftover test namespaces: `oc get ns | grep test-dp-`
 - MIG still enabled when test expects full GPU — reset: `oc label node $GPU_NODE nvidia.com/mig.config=all-disabled --overwrite`
+
+---
+
+## Interactive Test Review
+
+After running `run-all.sh`, present a results table:
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | test-1.1-gpu-operator | PASS/FAIL/SKIP |
+| ... | ... | ... |
+
+If any tests failed, use `AskUserQuestion` to ask: "Which failed test would you like to investigate?" with options listing each failed test, plus:
+- Retry all failed tests
+- Skip — proceed to next phase
+
+For each investigated test:
+1. Show the test output/error
+2. Check the troubleshooting section above for known causes
+3. Use `AskUserQuestion`: "What to do?" with options: Retry this test / Apply suggested fix and retry / Skip this test / Stop

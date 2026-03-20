@@ -132,6 +132,16 @@ oc logs -n nvidia-dra-driver-gpu $(oc get pods -n nvidia-dra-driver-gpu -o name 
 
 The DRA driver creates DeviceClasses on startup. If they're missing, the driver didn't start correctly. Check the DRA pod logs (same as "DRA pods CrashLooping" above).
 
+---
+
+## Interactive Verification
+
+After `install.sh` completes, check all three verification steps (DRA pods, ResourceSlices, DeviceClasses). If any fail, use `AskUserQuestion` to ask: "DRA install verification failed — [which check]. What to do?" with options:
+- Troubleshoot (diagnose using sections above)
+- Retry install (uninstall + reinstall)
+- Try different chart version
+- Stop
+
 ### Helm install fails
 
 **Symptom:** `helm install` returns an error.
