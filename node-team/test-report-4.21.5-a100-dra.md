@@ -671,7 +671,9 @@ Verifications:
 2. CPU and memory on same NUMA node (0) — `topologyManagerPolicy: single-numa-node` working
 3. Pod scheduled with GPU — topology manager accepted alignment
 
-**Result:** PASS
+**Result:** PASS*
+
+**Limitation:** Same as test 1.9 — this test runs on a single-NUMA node (GCP `a2-highgpu-1g`). NUMA alignment is trivially true since everything is on NUMA 0. The test verifies CPU pinning and policy configuration, but cannot prove topology manager enforcement. A meaningful test requires a multi-NUMA system.
 
 ---
 
@@ -739,7 +741,7 @@ env: NVIDIA_VISIBLE_DEVICES=void
 
 | 2.14 | kubelet DRA logs | PASS | DRA plugin socket (dra.sock) found, kubelet pod lifecycle logged |
 | 2.15 | Pod lifecycle | PASS | GPU allocated (UUID verified), ResourceClaim released on pod delete |
-| 2.16 | Topology + DRA | PASS | CPU pinned to core 6 on NUMA 0, GPU on NUMA 0 — proper alignment |
+| 2.16 | Topology + DRA | PASS* | CPU pinning verified, NUMA alignment trivially true (single-NUMA node) |
 | 2.17 | PodResources + DRA | PASS | GPU UUID verified, ResourceClaim shows MIG device allocation |
 
 **Passed: 18 | Skipped: 0 | Phase 2 COMPLETE**

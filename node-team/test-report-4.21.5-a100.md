@@ -386,7 +386,9 @@ pod/topo-test condition met
 [INFO] Topology test passed — CPU pinned (6), NUMA aligned (node 0), scheduled under single-numa-node policy
 ```
 
-**Result:** PASS
+**Result:** PASS*
+
+**Limitation:** This test runs on a single-NUMA node (GCP `a2-highgpu-1g`). It verifies that `topologyManagerPolicy: single-numa-node` is configured and CPU pinning works, but NUMA alignment is trivially true — everything (GPU, CPU, memory) is on NUMA 0 by definition. The topology manager can never reject a pod on single-NUMA hardware. A meaningful NUMA alignment test requires a multi-NUMA system (e.g., bare-metal 2-socket, or GB200).
 
 ---
 
@@ -499,7 +501,7 @@ pod/gpu-for-pr-api condition met
 | 1.6 | MPS enable | PASS | Needed migStrategy:none + default key |
 | 1.7 | MPS concurrent | PASS | 3 pods shared GPU via MPS (~3388 GFLOP/s each) |
 | 1.8 | CRI-O + crun | PASS | crun confirmed, CDI specs present |
-| 1.9 | Topology manager | PASS | CPU pinned (core 6), NUMA 0 aligned — after KubeletConfig |
+| 1.9 | Topology manager | PASS* | CPU pinning verified, NUMA alignment trivially true (single-NUMA node) |
 | 1.10 | CPU manager | PASS | CPU pinned (cores 2,8) — `cpuManagerPolicy: static` confirmed |
 | 1.11 | PodResources API | PASS | Pod ran, container ID retrieved |
 
