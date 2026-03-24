@@ -137,19 +137,24 @@ oc logs <failing-pod> -n nvidia-gpu-operator --all-containers
 
 **Diagnose:**
 ```bash
-GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o jsonpath='{.items[0].metadata.name}')
+GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
 oc logs -n nvidia-gpu-operator $(oc get pods -n nvidia-gpu-operator -l app=nvidia-mig-manager -o name | head -1)
 oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
 ```
 
 **Common causes:**
+- **Wrong ClusterPolicy** — must apply the `-mig` variant (with `mig.strategy: mixed`) before enabling MIG
+- **No WITH_REBOOT** — on GCP VMs, GPU reset is not supported. The MIG manager needs `WITH_REBOOT=true` env var to trigger a node reboot for MIG mode changes. All ClusterPolicy files should include this.
 - MIG manager pod not running — check `oc get pods -n nvidia-gpu-operator | grep mig`
 - MIG config label typo — must be exactly `nvidia.com/mig.config`, value must be a valid profile like `all-1g.5gb`
+- `mig.config.state = failed` — check MIG manager logs for "Resetting GPU ... is not supported" which means WITH_REBOOT is missing
 
-**Fix:** Reset and retry:
+**Fix:** Apply correct ClusterPolicy, reset and retry:
 ```bash
+oc apply -f node-team/gpu-cluster-policy-standard-mig.yaml   # adds mig.strategy: mixed + WITH_REBOOT
+sleep 30
 oc label node $GPU_NODE nvidia.com/mig.config=all-disabled --overwrite
-sleep 60
+# Wait for reboot (node goes NotReady then comes back)
 oc label node $GPU_NODE nvidia.com/mig.config=all-1g.5gb --overwrite
 ```
 
@@ -162,12 +167,15 @@ oc label node $GPU_NODE nvidia.com/mig.config=all-1g.5gb --overwrite
 oc get configmap device-plugin-config -n nvidia-gpu-operator -o yaml
 oc get pods -n nvidia-gpu-operator | grep device-plugin
 oc logs -n nvidia-gpu-operator $(oc get pods -n nvidia-gpu-operator -l app=nvidia-device-plugin-daemonset -o name | head -1)
-GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o jsonpath='{.items[0].metadata.name}')
+GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
 oc get node $GPU_NODE --show-labels | grep device-plugin.config
 ```
 
 **Common causes:**
-- ConfigMap format mismatch with GPU operator version — different versions use different schemas
+- **ConfigMap missing `flags.migStrategy: none`** — the MPS config must include `flags: migStrategy: none` alongside the `sharing.mps` block
+- **ClusterPolicy patch missing `default` key** — the patch must include both `config.name` and `config.default` pointing to the ConfigMap data key (e.g., `"default": "mps"`)
+- **MIG still enabled** — MPS cannot work with MIG active. Disable MIG first (reapply standard ClusterPolicy + label `all-disabled`, wait for reboot)
+- **MPS control daemon crash** — if you see `panic: runtime error: index out of range` in the MPS control daemon logs, clean up and reapply: delete the ConfigMap, remove the `device-plugin.config` label, remove `devicePlugin.config` from ClusterPolicy, then redo the steps in order
 - Device plugin pod didn't restart after ConfigMap change — force restart:
   ```bash
   oc delete pod -n nvidia-gpu-operator -l app=nvidia-device-plugin-daemonset

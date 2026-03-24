@@ -19,7 +19,19 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: $NS
----
+"
+
+header "Attempting to create admin ResourceClaim (should be rejected)"
+
+# Pick device class based on MIG state
+mig_state=$(oc get node "$(get_first_gpu_node)" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
+if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
+  DEVICE_CLASS="mig.nvidia.com"
+else
+  DEVICE_CLASS="gpu.nvidia.com"
+fi
+
+claim_output=$(oc apply -f - 2>&1 <<EOF || true
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
@@ -30,9 +42,20 @@ spec:
     requests:
     - name: gpu
       exactly:
-        deviceClassName: gpu.nvidia.com
+        deviceClassName: $DEVICE_CLASS
         adminAccess: true
----
+EOF
+)
+
+echo "$claim_output"
+
+if echo "$claim_output" | grep -q "admin access to devices requires"; then
+  info "ResourceClaim correctly rejected — admin access forbidden in unlabeled namespace"
+  info "Admin access negative test passed"
+else
+  # Claim was created — check if pod stays Pending
+  warn "ResourceClaim was not rejected at creation — checking pod scheduling"
+  apply_yaml "
 apiVersion: v1
 kind: Pod
 metadata:
@@ -43,7 +66,7 @@ spec:
   containers:
   - name: monitor
     image: ubuntu:22.04
-    command: ['bash', '-c', 'nvidia-smi; echo SHOULD_NOT_RUN']
+    command: ['bash', '-c', 'echo SHOULD_NOT_RUN']
     resources:
       claims:
       - name: admin-gpu
@@ -55,33 +78,12 @@ spec:
     operator: Exists
     effect: NoSchedule
 "
-
-header "Waiting to verify admin claim is rejected"
-sleep 30
-
-phase=$(oc get pod admin-pod -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
-
-if [ "$phase" = "Pending" ]; then
-  info "Pod correctly stays Pending — admin access rejected in unlabeled namespace"
-
-  events=$(oc get events -n "$NS" --field-selector involvedObject.name=admin-pod -o json 2>/dev/null | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for e in data.get('items', []):
-    msg = e.get('message', '')
-    reason = e.get('reason', '')
-    if msg:
-        print(f'  [{reason}] {msg}')
-" 2>/dev/null || true)
-  if [ -n "$events" ]; then
-    echo "$events"
+  sleep 30
+  phase=$(oc get pod admin-pod -n "$NS" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['status']['phase'])")
+  if [ "$phase" = "Running" ] || [ "$phase" = "Succeeded" ]; then
+    error "Pod is $phase — admin claim should have been rejected in unlabeled namespace"
+    exit 1
   fi
-elif [ "$phase" = "Running" ] || [ "$phase" = "Succeeded" ]; then
-  error "Pod is $phase — admin claim should have been rejected in unlabeled namespace"
-  exit 1
-else
-  # Could be FailedScheduling or similar — still a pass
-  info "Pod phase: $phase — admin access appears to be blocked"
+  info "Pod phase: $phase — admin access blocked at scheduling"
+  info "Admin access negative test passed"
 fi
-
-info "Admin access negative test passed"

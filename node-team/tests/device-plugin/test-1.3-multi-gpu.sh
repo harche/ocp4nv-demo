@@ -17,7 +17,7 @@ gpu_count=$(get_gpu_count "$gpu_node")
 if [ "$gpu_count" -lt 2 ]; then
   warn "Node $gpu_node has only $gpu_count GPU(s), need 2+. Skipping test."
   warn "Use a2-highgpu-2g or larger instance type for this test."
-  exit 0
+  exit 2
 fi
 
 cleanup_ns "$NS"

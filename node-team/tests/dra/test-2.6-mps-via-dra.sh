@@ -12,10 +12,53 @@ trap cleanup EXIT
 
 gpu_node=$(get_first_gpu_node)
 
-header "Step 1: Disable MIG (if enabled)"
-oc label node "$gpu_node" nvidia.com/mig.config=all-disabled --overwrite 2>/dev/null || true
-info "Waiting for MIG to disable..."
-sleep 60
+header "Step 1: Ensure MIG is disabled"
+mig_state=$(oc get node "$gpu_node" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
+
+if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
+  info "MIG is $mig_state — disabling..."
+  oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-dra.yaml"
+  oc patch clusterpolicy gpu-cluster-policy --type=json -p '[{"op": "remove", "path": "/spec/devicePlugin/config"}]' 2>/dev/null || true
+  sleep 15
+  oc label node "$gpu_node" nvidia.com/mig.config=all-disabled --overwrite
+
+  info "Waiting for node to reboot..."
+  reboot_timeout=180
+  elapsed=0
+  while [ $elapsed -lt $reboot_timeout ]; do
+    node_status=$(oc get node "$gpu_node" -o json 2>/dev/null | python3 -c "import sys,json; cs=[c for c in json.load(sys.stdin)['status']['conditions'] if c['type']=='Ready']; print(cs[0]['status'] if cs else 'Unknown')" 2>/dev/null || echo "Unknown")
+    if [ "$node_status" != "True" ]; then
+      info "Node is rebooting"
+      break
+    fi
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  wait_for_nodes_ready 600
+  sleep 30
+
+  info "Waiting for all pods to recover..."
+  op_timeout=600
+  elapsed=0
+  while [ $elapsed -lt $op_timeout ]; do
+    pod_status=$(oc get pods -n nvidia-gpu-operator -o json 2>/dev/null | python3 -c "
+import sys,json
+pods = json.load(sys.stdin)['items']
+not_ready = len([p for p in pods if p['status']['phase'] not in ('Running','Succeeded')])
+print(f'{not_ready} {len(pods)}')" 2>/dev/null || echo "99 0")
+    not_ready=$(echo "$pod_status" | cut -d' ' -f1)
+    total=$(echo "$pod_status" | cut -d' ' -f2)
+    if [ "$not_ready" -eq 0 ] && [ "$total" -gt 5 ]; then
+      info "All pods healthy ($total GPU operator pods)"
+      break
+    fi
+    sleep 20
+    elapsed=$((elapsed + 20))
+  done
+else
+  info "MIG already disabled (state: $mig_state) — skipping"
+fi
 
 header "Step 2: Deploy MPS workload via DRA"
 cleanup_ns "$NS"

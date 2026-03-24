@@ -11,7 +11,22 @@ DRA_CHART_VERSION="${DRA_CHART_VERSION:-25.12.0}"
 DRA_NAMESPACE="nvidia-dra-driver-gpu"
 
 header "Step 1: Switch ClusterPolicy to DRA mode (disable device plugin)"
-oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-dra.yaml"
+if [ "${DRIVER_PREINSTALLED:-false}" = "true" ]; then
+  info "Using RHCOS4NV ClusterPolicy (driver pre-installed)"
+  oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-dra-rhcos4nv.yaml"
+else
+  oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-dra.yaml"
+fi
+
+# Clean up stale devicePlugin.config if left over from MPS tests
+if oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.spec.devicePlugin.config}' 2>/dev/null | grep -q "name"; then
+  info "Removing stale devicePlugin.config from ClusterPolicy"
+  oc patch clusterpolicy gpu-cluster-policy --type=json -p '[{"op": "remove", "path": "/spec/devicePlugin/config"}]' 2>/dev/null || true
+fi
+
+# Clean up MPS ConfigMap and node label if present
+oc delete configmap device-plugin-config -n nvidia-gpu-operator --ignore-not-found 2>/dev/null || true
+oc label nodes --all nvidia.com/device-plugin.config- 2>/dev/null || true
 
 header "Step 2: Wait for GPU operator to reconcile"
 info "Waiting for device plugin pods to terminate..."
@@ -42,16 +57,25 @@ if helm status nvidia-dra-driver-gpu -n "$DRA_NAMESPACE" &>/dev/null; then
   helm upgrade nvidia-dra-driver-gpu nvidia/nvidia-dra-driver-gpu \
     --version="$DRA_CHART_VERSION" \
     --namespace "$DRA_NAMESPACE" \
-    --set nvidiaDriverRoot=/run/nvidia/driver
+    --set nvidiaDriverRoot=/run/nvidia/driver \
+    --set gpuResourcesEnabledOverride=true \
+    --set featureGates.MPSSupport=true
 else
   helm install nvidia-dra-driver-gpu nvidia/nvidia-dra-driver-gpu \
     --version="$DRA_CHART_VERSION" \
     --create-namespace \
     --namespace "$DRA_NAMESPACE" \
-    --set nvidiaDriverRoot=/run/nvidia/driver
+    --set nvidiaDriverRoot=/run/nvidia/driver \
+    --set gpuResourcesEnabledOverride=true \
+    --set featureGates.MPSSupport=true
 fi
 
-header "Step 6: Verify DRA driver"
+header "Step 6: Grant privileged SCC for MPS control daemon"
+# The DRA driver creates MPS control daemon deployments using the default SA.
+# On OpenShift, this SA needs the privileged SCC for hostPID and hostPath access.
+oc adm policy add-scc-to-user privileged -z default -n "$DRA_NAMESPACE" 2>/dev/null || true
+
+header "Step 7: Verify DRA driver"
 info "Waiting for DRA driver pods..."
 sleep 15
 oc get pods -n "$DRA_NAMESPACE"

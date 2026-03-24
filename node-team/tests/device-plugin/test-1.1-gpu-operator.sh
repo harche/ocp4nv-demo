@@ -19,7 +19,7 @@ info "All GPU operator pods healthy"
 header "Checking nvidia.com/gpu resource on nodes"
 gpu_nodes=$(get_gpu_nodes)
 if [ -z "$gpu_nodes" ]; then
-  error "No GPU nodes found (label: feature.node.kubernetes.io/pci-10de.present)"
+  error "No GPU nodes found (label: $GPU_NODE_LABEL)"
   exit 1
 fi
 

@@ -3,6 +3,7 @@ kind: ClusterPolicy
 metadata:
   name: gpu-cluster-policy
 spec:
+  daemonsets: {}
   operator:
     defaultRuntime: crio
   driver:
@@ -21,6 +22,9 @@ spec:
     enabled: true
   migManager:
     enabled: true
+    env:
+      - name: WITH_REBOOT
+        value: "true"
   nodeStatusExporter:
     enabled: true
   validator:

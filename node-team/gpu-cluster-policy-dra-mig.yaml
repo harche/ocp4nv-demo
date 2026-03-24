@@ -14,6 +14,8 @@ spec:
     enabled: true
   devicePlugin:
     enabled: false
+  mig:
+    strategy: mixed
   dcgm:
     enabled: true
   dcgmExporter:

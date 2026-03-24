@@ -133,13 +133,25 @@ Start -> [MIG off after device-plugin tests, MPS config may exist]
 | Variable | Default | Used by | Purpose |
 |----------|---------|---------|---------|
 | `GPU_PRODUCT_PATTERN` | `a100` | test-2.7 | CEL regex pattern for productName matching |
-| `MIG_PROFILE` | `all-1g.5gb` | test-2.5 | MIG profile for node label |
+| `GPU_EXPECTED_ARCH` | _(empty)_ | test-2.1 | Expected GPU architecture in ResourceSlices (informational) |
+| `GPU_EXPECTED_CUDA_CAP` | _(empty)_ | test-2.1 | Expected CUDA compute capability (informational) |
+| `MIG_PROFILE` | `all-1g.5gb` | test-2.5, test-2.8, test-2.9 | MIG profile for node label |
+| `MIG_PROFILE_SMALL` | `1g.5gb` | test-2.5, test-2.8, test-2.9 | Smallest MIG profile name (used in CEL selectors) |
+| `MIG_PROFILE_MEDIUM` | `3g.20gb` | test-2.8 | Medium MIG profile for preferred device test |
+| `MIG_PROFILE_LARGE` | `7g.40gb` | test-2.9 | Large MIG profile used as "impossible" in fallback test |
 
 ### Adapting for Voyager/GB200
 
 ```bash
+export DRIVER_PREINSTALLED=true
 export GPU_PRODUCT_PATTERN=gb200
-export MIG_PROFILE=all-1g.10gb   # adjust to actual GB200 MIG profiles
+export GPU_EXPECTED_ARCH=Blackwell
+export GPU_EXPECTED_CUDA_CAP=10.0.0
+export MIG_PROFILE=all-1g.24gb
+export MIG_PROFILE_SMALL=1g.24gb
+export MIG_PROFILE_MEDIUM=3g.95gb
+export MIG_PROFILE_LARGE=7g.189gb
+export MIG_RESOURCE=nvidia.com/mig-1g.24gb
 tests/dra/run-all.sh
 ```
 
@@ -233,7 +245,7 @@ oc get events -n <namespace> --sort-by=.lastTimestamp | tail -10
   ```
 - MIG enabled when test expects full GPU (or vice versa) — check node label:
   ```bash
-  GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o jsonpath='{.items[0].metadata.name}')
+  GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
   oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
   ```
 - CEL selector doesn't match any device — inspect available attributes:
@@ -247,7 +259,7 @@ oc get events -n <namespace> --sort-by=.lastTimestamp | tail -10
 
 **Diagnose:**
 ```bash
-GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o jsonpath='{.items[0].metadata.name}')
+GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
 oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
 oc logs -n nvidia-gpu-operator $(oc get pods -n nvidia-gpu-operator -l app=nvidia-mig-manager -o name | head -1)
 oc get pods -n nvidia-dra-driver-gpu
@@ -273,12 +285,31 @@ oc logs mps-pod -c mps-ctr0 -n test-dra-mps
 ```
 
 **Common causes:**
-- MIG still enabled — MPS requires full GPU mode. Check:
+
+- **`unknown GPU sharing strategy: MPS`** — the DRA driver has MPS behind a feature gate. The Helm install must include `--set featureGates.MPSSupport=true`. The `dra/install.sh` script handles this.
+
+- **MPS control daemon `FailedCreate` (SCC)** — the DRA driver spawns a separate Deployment for each MPS control daemon using the `default` service account. On OpenShift this SA needs the `privileged` SCC for `hostPID` and `hostPath` access:
   ```bash
-  GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o jsonpath='{.items[0].metadata.name}')
-  oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
+  oc adm policy add-scc-to-user privileged -z default -n nvidia-dra-driver-gpu
   ```
-  If `mig.config` is not `all-disabled`, disable it and wait 60s.
+  The `dra/install.sh` script handles this. Check events if MPS daemon pods aren't created:
+  ```bash
+  oc get events -n nvidia-dra-driver-gpu -o json | python3 -c "import sys,json; [print(e['message'][:300]) for e in json.load(sys.stdin)['items'] if 'Failed' in e.get('reason','')]"
+  ```
+
+- **MPS daemon stuck / stale state** — failed MPS attempts leave orphaned deployments and stale ResourceClaim preparation state. Clean up and retry:
+  ```bash
+  oc delete deployments -n nvidia-dra-driver-gpu -l app.kubernetes.io/component=mps-control-daemon
+  oc delete pods -n nvidia-dra-driver-gpu --all
+  # Wait for DRA pods to restart, then retry test
+  ```
+
+- **MIG still enabled** — MPS requires full GPU mode. Check:
+  ```bash
+  oc get node $GPU_NODE -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))"
+  ```
+  If not `all-disabled`, disable MIG first (triggers reboot).
+
 - `GpuConfig` API version mismatch — the opaque parameters use `resource.nvidia.com/v1beta1`. If the DRA driver version doesn't support this, check DRA driver logs.
 
 ---

@@ -41,13 +41,13 @@ spec:
   containers:
   - name: ctr0
     image: ubuntu:22.04
-    command: ['bash', '-c', 'nvidia-smi -L; trap \"exit 0\" TERM; sleep 9999 & wait']
+    command: ['bash', '-c', 'nvidia-smi --query-gpu=uuid --format=csv,noheader > /tmp/gpu-uuid; trap \"exit 0\" TERM; sleep 9999 & wait']
     resources:
       claims:
       - name: shared-gpu
   - name: ctr1
     image: ubuntu:22.04
-    command: ['bash', '-c', 'nvidia-smi -L; trap \"exit 0\" TERM; sleep 9999 & wait']
+    command: ['bash', '-c', 'nvidia-smi --query-gpu=uuid --format=csv,noheader > /tmp/gpu-uuid; trap \"exit 0\" TERM; sleep 9999 & wait']
     resources:
       claims:
       - name: shared-gpu
@@ -63,8 +63,8 @@ spec:
 wait_for_pod_running "$NS" "shared-gpu-pod" 120
 
 header "Checking GPU UUID in both containers"
-uuid0=$(oc logs shared-gpu-pod -c ctr0 -n "$NS" | grep -oP 'UUID: \K[^ ]+' | head -1)
-uuid1=$(oc logs shared-gpu-pod -c ctr1 -n "$NS" | grep -oP 'UUID: \K[^ ]+' | head -1)
+uuid0=$(oc exec shared-gpu-pod -c ctr0 -n "$NS" -- cat /tmp/gpu-uuid | tr -d '[:space:]')
+uuid1=$(oc exec shared-gpu-pod -c ctr1 -n "$NS" -- cat /tmp/gpu-uuid | tr -d '[:space:]')
 
 info "Container ctr0 GPU UUID: $uuid0"
 info "Container ctr1 GPU UUID: $uuid1"

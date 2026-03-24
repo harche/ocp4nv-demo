@@ -7,13 +7,13 @@ spec:
   operator:
     defaultRuntime: crio
   driver:
-    enabled: true
+    enabled: false
   toolkit:
     enabled: true
   cdi:
     enabled: true
   devicePlugin:
-    enabled: false
+    enabled: true
   dcgm:
     enabled: true
   dcgmExporter:

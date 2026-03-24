@@ -13,13 +13,23 @@ trap cleanup EXIT
 cleanup_ns "$NS"
 wait_for_ns_deleted "$NS"
 
+# Pick device class based on what's available (MIG or full GPU)
+mig_state=$(oc get node "$(get_first_gpu_node)" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
+if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
+  DEVICE_CLASS="mig.nvidia.com"
+  info "MIG enabled — using $DEVICE_CLASS DeviceClass"
+else
+  DEVICE_CLASS="gpu.nvidia.com"
+  info "Using $DEVICE_CLASS DeviceClass"
+fi
+
 apply_yaml "
 apiVersion: v1
 kind: Namespace
 metadata:
   name: $NS
   labels:
-    resource.k8s.io/admin-access: 'true'
+    resource.kubernetes.io/admin-access: 'true'
 ---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -32,7 +42,7 @@ spec:
       requests:
       - name: gpu
         exactly:
-          deviceClassName: gpu.nvidia.com
+          deviceClassName: $DEVICE_CLASS
 ---
 apiVersion: v1
 kind: Pod
@@ -43,7 +53,7 @@ spec:
   containers:
   - name: cuda
     image: ubuntu:22.04
-    command: ['bash', '-c', 'echo workload running; trap \"exit 0\" TERM; sleep 9999 & wait']
+    command: ['bash', '-c', 'nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits > /tmp/gpu-uuid; trap \"exit 0\" TERM; sleep 9999 & wait']
     resources:
       claims:
       - name: gpu
@@ -71,7 +81,7 @@ spec:
     requests:
     - name: gpu
       exactly:
-        deviceClassName: gpu.nvidia.com
+        deviceClassName: $DEVICE_CLASS
         adminAccess: true
 ---
 apiVersion: v1
@@ -83,7 +93,7 @@ spec:
   containers:
   - name: monitor
     image: ubuntu:22.04
-    command: ['bash', '-c', 'nvidia-smi; echo ADMIN_ACCESS_OK; trap \"exit 0\" TERM; sleep 9999 & wait']
+    command: ['bash', '-c', 'nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits > /tmp/gpu-uuid; trap \"exit 0\" TERM; sleep 9999 & wait']
     resources:
       claims:
       - name: admin-gpu
@@ -98,14 +108,29 @@ spec:
 
 wait_for_pod_running "$NS" "admin-pod" 120
 
-admin_logs=$(oc logs admin-pod -n "$NS")
-echo "$admin_logs"
+header "Verifying GPU UUID match and workload pod health"
 
-# Verify workload pod is still running
-workload_phase=$(oc get pod workload-pod -n "$NS" -o jsonpath='{.status.phase}')
-if [ "$workload_phase" = "Running" ] && echo "$admin_logs" | grep -q "ADMIN_ACCESS_OK"; then
-  info "Admin pod accessed GPU, workload pod undisturbed (still $workload_phase)"
-else
-  error "Admin access test failed (workload_phase=$workload_phase)"
+workload_uuid=$(oc exec workload-pod -n "$NS" -- cat /tmp/gpu-uuid | tr -d '[:space:]')
+admin_uuid=$(oc exec admin-pod -n "$NS" -- cat /tmp/gpu-uuid | tr -d '[:space:]')
+workload_phase=$(oc get pod workload-pod -n "$NS" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['status']['phase'])")
+
+info "Workload pod GPU UUID: $workload_uuid"
+info "Admin pod GPU UUID:    $admin_uuid"
+info "Workload pod phase:    $workload_phase"
+
+if [ -z "$workload_uuid" ] || [ -z "$admin_uuid" ]; then
+  error "Could not retrieve GPU UUID from one or both pods"
   exit 1
 fi
+
+if [ "$workload_uuid" != "$admin_uuid" ]; then
+  error "GPU UUIDs do not match — admin pod did not access the same GPU"
+  exit 1
+fi
+
+if [ "$workload_phase" != "Running" ]; then
+  error "Workload pod is $workload_phase — expected Running"
+  exit 1
+fi
+
+info "Admin pod accessed same GPU (UUID match), workload pod undisturbed"

@@ -11,8 +11,12 @@ header "OCPNODE-4170: NVIDIA DRA driver validation"
 for test_script in "$SCRIPT_DIR"/test-*.sh; do
   test_name="$(basename "$test_script" .sh)"
   header "$test_name"
-  if bash "$test_script"; then
+  bash "$test_script"
+  rc=$?
+  if [ $rc -eq 0 ]; then
     assert_pass "$test_name"
+  elif [ $rc -eq 2 ]; then
+    assert_skip "$test_name"
   else
     assert_fail "$test_name"
   fi

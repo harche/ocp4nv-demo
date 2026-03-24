@@ -12,6 +12,16 @@ trap cleanup EXIT
 
 gpu_node=$(get_first_gpu_node)
 
+# Pick device class based on MIG state
+mig_state=$(oc get node "$gpu_node" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
+if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
+  DEVICE_CLASS="mig.nvidia.com"
+  info "MIG enabled — using $DEVICE_CLASS DeviceClass"
+else
+  DEVICE_CLASS="gpu.nvidia.com"
+  info "Using $DEVICE_CLASS DeviceClass"
+fi
+
 header "Deploy DRA GPU pod for PodResources API check"
 cleanup_ns "$NS"
 wait_for_ns_deleted "$NS"
@@ -33,7 +43,7 @@ spec:
       requests:
       - name: gpu
         exactly:
-          deviceClassName: gpu.nvidia.com
+          deviceClassName: $DEVICE_CLASS
 ---
 apiVersion: v1
 kind: Pod
@@ -44,7 +54,7 @@ spec:
   containers:
   - name: cuda
     image: ubuntu:22.04
-    command: ['bash', '-c', 'trap \"exit 0\" TERM; sleep 9999 & wait']
+    command: ['bash', '-c', 'nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits > /tmp/gpu-uuid; trap \"exit 0\" TERM; sleep 9999 & wait']
     resources:
       claims:
       - name: gpu
@@ -58,60 +68,93 @@ spec:
 "
 
 wait_for_pod_running "$NS" "pr-api-pod" 120
-info "DRA GPU pod running"
 
-header "Querying PodResources API on $gpu_node"
-
-# Check the pod's ResourceClaim status for allocation details
-claim_name=$(oc get pod pr-api-pod -n "$NS" -o jsonpath='{.status.resourceClaimStatuses[0].resourceClaimName}' 2>/dev/null || echo "")
-if [ -n "$claim_name" ]; then
-  info "ResourceClaim: $claim_name"
-  oc get resourceclaim "$claim_name" -n "$NS" -o yaml 2>/dev/null | grep -A 20 "allocation:" || true
+gpu_uuid=$(oc exec pr-api-pod -n "$NS" -- cat /tmp/gpu-uuid 2>/dev/null | tr -d '[:space:]')
+if [ -n "$gpu_uuid" ]; then
+  info "DRA GPU pod running (UUID: $gpu_uuid)"
+else
+  error "Pod running but no GPU UUID found"
+  exit 1
 fi
 
-# Check container info for DRA device allocation
-container_id=$(oc get pod pr-api-pod -n "$NS" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's|cri-o://||')
-if [ -n "$container_id" ]; then
-  info "Container ID: $container_id"
-  device_info=$(run_on_node "$gpu_node" crictl inspect "$container_id" 2>/dev/null | python3 -c "
-import sys, json
+header "Step 1: Verify ResourceClaim allocation"
+
+claim_name=$(oc get pod pr-api-pod -n "$NS" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['status']['resourceClaimStatuses'][0]['resourceClaimName'])" 2>/dev/null || echo "")
+if [ -z "$claim_name" ]; then
+  error "No ResourceClaim found in pod status"
+  exit 1
+fi
+info "ResourceClaim: $claim_name"
+
+claim_device=$(oc get resourceclaim "$claim_name" -n "$NS" -o json | python3 -c "
+import sys,json
+claim = json.load(sys.stdin)
+results = claim.get('status',{}).get('allocation',{}).get('devices',{}).get('results',[])
+for r in results:
+    print(f'device={r[\"device\"]} driver={r[\"driver\"]} pool={r[\"pool\"]}')
+" 2>/dev/null || echo "")
+if [ -n "$claim_device" ]; then
+  info "Allocation: $claim_device"
+else
+  error "ResourceClaim has no device allocation"
+  exit 1
+fi
+
+header "Step 2: Verify DRA device injection via crictl inspect"
+
+container_id=$(oc get pod pr-api-pod -n "$NS" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['status']['containerStatuses'][0]['containerID'].replace('cri-o://',''))" 2>/dev/null || echo "")
+if [ -z "$container_id" ]; then
+  error "Could not get container ID"
+  exit 1
+fi
+info "Container ID: $container_id"
+
+inspect_output=$(run_on_node "$gpu_node" crictl inspect "$container_id" 2>/dev/null || echo "{}")
+
+# Parse CDI annotations and NVIDIA devices from crictl inspect
+device_info=$(echo "$inspect_output" | python3 -c "
+import sys,json
 data = json.load(sys.stdin)
-# Check for CDI devices
 info_data = data.get('info', {})
-config = info_data.get('config', {})
-# Check annotations for CDI
-annotations = config.get('annotations', {})
+config = json.loads(info_data.get('info', '{}')) if isinstance(info_data.get('info'), str) else info_data
+
+# Try multiple paths for annotations
+annotations = {}
+for path in [config, data.get('status',{})]:
+    annotations.update(path.get('annotations', {}))
+
+cdi_found = False
 for k, v in annotations.items():
     if 'cdi' in k.lower() or 'nvidia' in k.lower():
-        print(f'  annotation: {k}={v}')
-# Check devices
-devices = config.get('devices', [])
+        print(f'annotation: {k}={v[:200]}')
+        cdi_found = True
+
+# Check linux devices
+linux = config.get('linux', data.get('info',{}).get('runtimeSpec',{}).get('linux',{}))
+devices = linux.get('devices', [])
 for d in devices:
-    path = d.get('container_path', d.get('path', ''))
+    path = d.get('path', '')
     if 'nvidia' in path:
-        print(f'  device: {path}')
-# Check env vars
-envs = config.get('envs', [])
+        print(f'device: {path}')
+        cdi_found = True
+
+# Check env
+process = config.get('process', data.get('info',{}).get('runtimeSpec',{}).get('process',{}))
+envs = process.get('env', [])
 for e in envs:
-    if 'NVIDIA' in e.get('key', '') or 'CDI' in e.get('key', ''):
-        print(f\"  env: {e['key']}={e['value']}\")
-" 2>/dev/null || echo "  could not parse container info")
-  echo "$device_info"
+    if 'NVIDIA' in e or 'CUDA' in e:
+        print(f'env: {e}')
+        cdi_found = True
+
+if not cdi_found:
+    print('NO_CDI_FOUND')
+" 2>/dev/null || echo "parse_error")
+
+echo "$device_info"
+
+if echo "$device_info" | grep -q "NO_CDI_FOUND\|parse_error"; then
+  error "No CDI/NVIDIA device injection found in container inspect"
+  exit 1
 fi
 
-# Try PodResources API via kubelet socket
-pr_result=$(run_on_node "$gpu_node" \
-  curl -s --unix-socket /var/lib/kubelet/pod-resources/kubelet.sock \
-  http://localhost/v1/list 2>/dev/null || echo "")
-
-if [ -n "$pr_result" ] && [ "$pr_result" != "" ]; then
-  if echo "$pr_result" | grep -qi "nvidia\|gpu\|dra"; then
-    info "PodResources API reports DRA-allocated GPU"
-  else
-    warn "PodResources API response does not mention GPU/DRA"
-  fi
-else
-  warn "Could not query PodResources API directly"
-fi
-
-info "PodResources API + DRA test complete"
+info "PodResources + DRA verification complete — DRA device allocation and CDI injection confirmed"

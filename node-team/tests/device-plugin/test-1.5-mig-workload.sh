@@ -9,12 +9,16 @@ source "$SCRIPT_DIR/../lib/common.sh"
 
 NS="test-dp-mig-workload"
 MIG_RESOURCE="${MIG_RESOURCE:-nvidia.com/mig-1g.5gb}"
+MIG_PROFILE_SMALL="${MIG_PROFILE_SMALL:-1g.5gb}"
+
+check_cdmm_mig_compatible
+
 cleanup() { cleanup_ns "$NS"; }
 trap cleanup EXIT
 
 # Verify MIG resources exist
 gpu_node=$(get_first_gpu_node)
-mig_count=$(oc get node "$gpu_node" -o jsonpath="{.status.allocatable.nvidia\.com/mig-1g\.5gb}" 2>/dev/null || echo "0")
+mig_count=$(oc get node "$gpu_node" -o json | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',{}).get('allocatable',{}).get('nvidia.com/mig-${MIG_PROFILE_SMALL}','0'))" 2>/dev/null || echo "0")
 if [ "$mig_count" = "0" ] || [ -z "$mig_count" ]; then
   error "No $MIG_RESOURCE available on $gpu_node. Run test-1.4 first."
   exit 1

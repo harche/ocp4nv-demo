@@ -13,7 +13,9 @@ spec:
   cdi:
     enabled: true
   devicePlugin:
-    enabled: false
+    enabled: true
+  mig:
+    strategy: mixed
   dcgm:
     enabled: true
   dcgmExporter:

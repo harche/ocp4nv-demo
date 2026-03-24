@@ -22,7 +22,12 @@ info "Waiting for namespace cleanup..."
 sleep 15
 
 header "Step 3: Restore device-plugin ClusterPolicy"
-oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-standard.yaml"
+if [ "${DRIVER_PREINSTALLED:-false}" = "true" ]; then
+  info "Using RHCOS4NV ClusterPolicy (driver pre-installed)"
+  oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-standard-rhcos4nv.yaml"
+else
+  oc apply -f "$NODE_TEAM_ROOT/gpu-cluster-policy-standard.yaml"
+fi
 
 header "Step 4: Wait for GPU operator to reconcile"
 sleep 30

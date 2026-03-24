@@ -7,6 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
 NS="test-dra-exhaust"
+
+check_cdmm_mig_compatible
+
 cleanup() { cleanup_ns "$NS"; }
 trap cleanup EXIT
 
@@ -31,11 +34,11 @@ spec:
       requests:
       - name: gpu
         firstAvailable:
-        - exactly:
-            deviceClassName: mig.nvidia.com
-            selectors:
-            - cel:
-                expression: \"device.attributes['gpu.nvidia.com'].profile == 'nonexistent-99g.999gb'\"
+        - name: impossible
+          deviceClassName: mig.nvidia.com
+          selectors:
+          - cel:
+              expression: \"device.attributes['gpu.nvidia.com'].profile == 'nonexistent-99g.999gb'\"
 ---
 apiVersion: v1
 kind: Pod

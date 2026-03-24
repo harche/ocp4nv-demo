@@ -22,46 +22,84 @@ The test scripts are hardware-agnostic where possible. Hardware-specific bits (C
 
 ```
 node-team/
-├── CLAUDE.md                          <- you are here
-├── gpu-cluster-policy-standard.yaml   <- devicePlugin: true  (Phase 1)
-├── gpu-cluster-policy-dra.yaml        <- devicePlugin: false (Phase 2)
-├── dra/                               <- DRA driver install/uninstall
-│   └── CLAUDE.md                      <- DRA install troubleshooting
-└── tests/                             <- all test scripts
-    ├── CLAUDE.md                      <- test conventions, general troubleshooting
-    ├── lib/                           <- shared helpers
-    │   └── CLAUDE.md                  <- function reference
-    ├── device-plugin/                 <- OCPNODE-4138
-    │   └── CLAUDE.md                  <- expected results, device-plugin troubleshooting
-    └── dra/                           <- OCPNODE-4170
-        └── CLAUDE.md                  <- expected results, DRA test troubleshooting
+├── CLAUDE.md                                    <- you are here
+├── gpu-cluster-policy-standard.yaml             <- devicePlugin: true  (Phase 1)
+├── gpu-cluster-policy-standard-mig.yaml         <- devicePlugin: true  + mig.strategy: mixed
+├── gpu-cluster-policy-dra.yaml                  <- devicePlugin: false (Phase 2)
+├── gpu-cluster-policy-dra-mig.yaml              <- devicePlugin: false + mig.strategy: mixed
+├── gpu-cluster-policy-standard-rhcos4nv.yaml    <- same + driver: false (Voyager)
+├── gpu-cluster-policy-dra-rhcos4nv.yaml         <- same + driver: false (Voyager)
+├── dra/                                         <- DRA driver install/uninstall
+│   └── CLAUDE.md                                <- DRA install troubleshooting
+└── tests/                                       <- all test scripts
+    ├── CLAUDE.md                                <- test conventions, general troubleshooting
+    ├── lib/                                     <- shared helpers
+    │   └── CLAUDE.md                            <- function reference
+    ├── device-plugin/                           <- OCPNODE-4138
+    │   └── CLAUDE.md                            <- expected results, device-plugin troubleshooting
+    └── dra/                                     <- OCPNODE-4170
+        └── CLAUDE.md                            <- expected results, DRA test troubleshooting
 ```
 
-## Two ClusterPolicy Variants
+## ClusterPolicy Variants
 
-Both policies install the full GPU Operator stack (driver, toolkit, DCGM, GFD, MIG manager, CDI). The only difference:
+All policies install the full GPU Operator stack (driver, toolkit, DCGM, GFD, MIG manager, CDI). They differ in device-plugin mode, driver, and MIG strategy:
 
-| File | `devicePlugin` | `cdi` | Used for |
-|------|---------------|-------|----------|
-| `gpu-cluster-policy-standard.yaml` | **true** | true | Device-plugin tests (Phase 1) |
-| `gpu-cluster-policy-dra.yaml` | **false** | true | DRA tests (Phase 2) |
+| File | `devicePlugin` | `driver` | `mig.strategy` | Used for |
+|------|---------------|----------|----------------|----------|
+| `gpu-cluster-policy-standard.yaml` | **true** | true | — | Device-plugin tests — A100/standard RHCOS |
+| `gpu-cluster-policy-standard-mig.yaml` | **true** | true | **mixed** | Device-plugin + MIG tests — A100/standard RHCOS |
+| `gpu-cluster-policy-dra.yaml` | **false** | true | — | DRA tests — A100/standard RHCOS |
+| `gpu-cluster-policy-dra-mig.yaml` | **false** | true | **mixed** | DRA + MIG tests — A100/standard RHCOS |
+| `gpu-cluster-policy-standard-rhcos4nv.yaml` | **true** | **false** | — | Device-plugin tests — Voyager/GB200 (driver baked in) |
+| `gpu-cluster-policy-dra-rhcos4nv.yaml` | **false** | **false** | — | DRA tests — Voyager/GB200 (driver baked in) |
 
-CDI is enabled in both because the DRA path requires it, and it doesn't hurt device-plugin mode.
+**Common settings across all policies:**
+- `daemonsets: {}` — required by GPU Operator v26+
+- `migManager.env: WITH_REBOOT=true` — required on GCP (and any VM where GPU reset is not supported); triggers node reboot on MIG mode changes
+- CDI enabled in all (required for DRA, harmless for device-plugin)
+
+The RHCOS4NV variants set `driver.enabled: false` because the NVIDIA driver (590.x) is pre-installed in the OS image. No MIG variants for RHCOS4NV (MIG is skipped on GB200/Voyager due to CDMM).
+
+**MIG state transitions require switching ClusterPolicy:**
+- Before enabling MIG: apply the `-mig` variant (adds `mig.strategy: mixed`)
+- Before disabling MIG: reapply the standard variant (removes `mig.strategy`)
+- The MIG manager needs `WITH_REBOOT=true` in both cases to handle GPU reset failures on VMs
 
 ---
 
-## Autonomous Execution Guide
+## Interactive Execution Guide
 
-Follow every step in order. Do NOT skip verification steps — they catch problems early. If a step fails, check the relevant CLAUDE.md for troubleshooting before proceeding.
+Follow every step in order. **Ask the user for confirmation before each step** using the `AskUserQuestion` tool. Do NOT skip verification steps — they catch problems early. If a step fails, check the relevant CLAUDE.md for troubleshooting before proceeding.
+
+### Interaction Pattern
+
+Use this pattern for every step:
+
+1. **Explain** what you are about to do and why
+2. **Ask for confirmation** via `AskUserQuestion` before running any `oc apply`, `helm install`, or destructive command
+3. **Execute** only after the user approves
+4. **Verify** the result and report status back to the user
+5. **Wait for approval** before moving to the next step
+
+You do NOT need to ask before read-only verification commands (`oc get`, `oc wait`, `oc describe`, etc.) — run those automatically to check status.
+
+### Important Patience Notes
+
+- **MIG enable/disable** triggers a node reboot (GPU reset is not supported on GCP VMs). The full cycle is: label node → node reboots → wait for Ready → wait for GPU operator pods → verify MIG resources. Budget 5-10 minutes. Before enabling MIG, apply the `-mig` ClusterPolicy variant. Before disabling, reapply the standard variant.
+- **MPS enable** requires a ConfigMap with `flags.migStrategy: none` and `sharing.mps` config, plus a ClusterPolicy patch with both `config.name` and `config.default` pointing to the ConfigMap key. MIG must be fully disabled first.
+- **Driver compilation** on first ClusterPolicy apply takes 3-10 minutes. Poll status periodically rather than timing out early.
+- **NFD labeling** takes 30-60s after creating the NFD instance. The GPU label is `pci-0302_10de.present` (3D controller class) on newer NFD versions, not the older `pci-10de.present`. The test library (`lib/common.sh`) auto-detects both via `_resolve_gpu_label`.
 
 ### Prerequisites
 
-Before starting, verify ALL of the following:
+Before starting, automatically verify ALL of the following (no confirmation needed for read-only checks):
 
 1. **`oc` is logged in with cluster-admin** — run `oc whoami` and `oc auth can-i '*' '*' --all-namespaces` (must return `yes`)
 2. **`helm` is installed** — run `helm version` (required for DRA driver in Phase 2)
-3. **Cluster workers are Ready with A100 GPUs** — run `oc get nodes` and confirm GPU worker nodes show `Ready`
-4. **Internet access from cluster** — workers must pull images from `nvcr.io` (NVIDIA container registry) and the GPU operator downloads drivers from the catalog
+3. **Cluster workers are Ready** — run `oc get nodes -o wide` and confirm node(s) show `Ready`
+4. **GPU hardware present** — run `oc debug node/<node> -- chroot /host lspci | grep -i nvidia` to confirm GPUs exist
+5. **Internet access from cluster** — workers must pull images from `nvcr.io` and the catalog
 
 If any prerequisite fails, use `AskUserQuestion` to report which check(s) failed and ask: "Fix and re-check? / Proceed anyway (risky) / Stop"
 
@@ -70,58 +108,49 @@ If any prerequisite fails, use `AskUserQuestion` to report which check(s) failed
 All commands run from the `ocp4nv-demo/` directory (parent of `node-team/`). The YAML files for NFD and GPU operator are in the parent directory.
 
 **Step 0.1 — Install NFD operator:**
+> Ask: "Ready to install the NFD operator from the Red Hat catalog? This applies `nfd-operator-install.yaml` (creates namespace, OperatorGroup, Subscription)."
+
 ```bash
 oc apply -f nfd-operator-install.yaml
-oc wait --for=condition=Available deployment -l app.kubernetes.io/name=node-feature-discovery-operator \
-  -n openshift-nfd --timeout=300s
 ```
+Then automatically verify the CSV reaches `Succeeded` and the controller pod is Running.
 
 **Step 0.2 — Create NFD instance (labels GPU nodes):**
+> Ask: "NFD operator is running. Ready to create the NFD instance? This will discover hardware features and label GPU nodes."
+
 ```bash
 oc apply -f nfd-instance.yaml
-sleep 30
-oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true
 ```
-**Verify:** At least one node listed. If none, wait 30s more and retry. If still nothing, nodes don't have GPUs — check instance type with `oc get nodes -o wide`.
+Then automatically wait 30-60s and verify GPU nodes are labeled (check both `pci-10de.present` and `pci-0302_10de.present`).
 
 **Step 0.3 — Install GPU operator:**
+> Ask: "NFD labeled N GPU node(s). Ready to install the GPU operator from the catalog?"
+
 ```bash
 oc apply -f gpu-operator-install.yaml
 ```
-Wait for CSV:
-```bash
-timeout=300; elapsed=0
-while [ $elapsed -lt $timeout ]; do
-  phase=$(oc get csv -n nvidia-gpu-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Waiting")
-  if [ "$phase" = "Succeeded" ]; then echo "CSV succeeded"; break; fi
-  sleep 10; elapsed=$((elapsed + 10))
-done
-```
+Then automatically wait for the CSV to reach `Succeeded`.
 
 **Step 0.4 — Apply ClusterPolicy (device-plugin mode):**
+> Ask: "GPU operator CSV succeeded. Ready to apply the ClusterPolicy? This will deploy the driver, toolkit, DCGM, device-plugin, and MIG manager on GPU nodes."
+
+For A100 / standard RHCOS (driver compiled at runtime):
 ```bash
 oc apply -f node-team/gpu-cluster-policy-standard.yaml
 ```
-Wait for GPU operator pods (3-10 minutes — driver downloads and compiles on each GPU node):
-```bash
-timeout=600; elapsed=0
-while [ $elapsed -lt $timeout ]; do
-  not_ready=$(oc get pods -n nvidia-gpu-operator --no-headers --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null | wc -l | tr -d ' ')
-  total=$(oc get pods -n nvidia-gpu-operator --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  echo "GPU operator pods: $((total - not_ready))/$total ready"
-  if [ "$not_ready" -eq 0 ] && [ "$total" -gt 0 ]; then break; fi
-  sleep 15; elapsed=$((elapsed + 15))
-done
-```
-If pods fail, see `tests/device-plugin/CLAUDE.md` > Troubleshooting > GPU operator pods not starting.
 
-**Step 0.5 — Sanity check:**
+For Voyager / GB200 / RHCOS4NV (driver pre-installed):
+```bash
+export DRIVER_PREINSTALLED=true
+oc apply -f node-team/gpu-cluster-policy-standard-rhcos4nv.yaml
+```
+Then automatically poll GPU operator pods until all are Running (up to 10 minutes for driver compilation).
+
+**Step 0.5 — Sanity check (automatic):**
 ```bash
 oc get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}'
 ```
-**Verify:** Each GPU worker shows `nvidia.com/gpu` = 1 or 2 (depending on instance type). If 0 or missing, wait and recheck.
-
-**Phase 0 is complete when:** all GPU operator pods are Running AND `nvidia.com/gpu > 0` on GPU workers.
+Report the GPU count per node. Phase 0 is complete when `nvidia.com/gpu > 0` on GPU workers.
 
 After verifying, use `AskUserQuestion`: "Phase 0 setup complete — all GPU operator pods running and GPUs detected. Proceed to Phase 1?" with options: Proceed to Phase 1 / Re-verify setup / Stop
 
@@ -129,10 +158,14 @@ After verifying, use `AskUserQuestion`: "Phase 0 setup complete — all GPU oper
 
 ### Phase 1: Device Plugin Tests (OCPNODE-4138)
 
+> Ask: "Phase 0 complete — all GPU operator pods are Running and nvidia.com/gpu is advertised. Ready to run device-plugin tests (11 tests, 1.1–1.11)?"
+
 ```bash
 bash node-team/tests/device-plugin/run-all.sh
 ```
-Runs 11 tests (1.1–1.11), prints pass/fail/skip summary. See `tests/device-plugin/CLAUDE.md` for expected results and troubleshooting.
+Report the pass/fail/skip summary. See `tests/device-plugin/CLAUDE.md` for expected results and troubleshooting.
+
+If any test fails, report the failure and ask the user how to proceed before continuing.
 
 **After Phase 1:** Present a results table. If there are failures, use `AskUserQuestion` to ask which failed test(s) to investigate or retry (list each failed test as an option, plus "Retry all failures" and "Skip — proceed to DRA transition"). For each investigated test, diagnose and offer to retry before moving on.
 
@@ -141,6 +174,8 @@ If all tests passed, use `AskUserQuestion`: "Phase 1 passed. Proceed to DRA tran
 ---
 
 ### Transition: Device Plugin to DRA
+
+> Ask: "Device-plugin tests complete (N passed, N failed, N skipped). Ready to transition to DRA mode? This runs `dra/install.sh` which switches the ClusterPolicy and installs the DRA driver via Helm."
 
 ```bash
 bash node-team/dra/install.sh
@@ -153,10 +188,14 @@ Takes 3-5 minutes. See `dra/CLAUDE.md` for troubleshooting if it fails.
 
 ### Phase 2: DRA Tests (OCPNODE-4170)
 
+> Ask: "DRA driver installed and ready. Ready to run DRA tests (17 tests, 2.1–2.17)?"
+
 ```bash
 bash node-team/tests/dra/run-all.sh
 ```
-Runs 17 tests (2.1–2.17), prints pass/fail/skip summary. See `tests/dra/CLAUDE.md` for expected results and troubleshooting.
+Report the pass/fail/skip summary. See `tests/dra/CLAUDE.md` for expected results and troubleshooting.
+
+If any test fails, report the failure and ask the user how to proceed before continuing.
 
 **After Phase 2:** Same interactive pattern as Phase 1 — present results, ask about failures, offer retry/investigate/skip.
 
@@ -165,6 +204,8 @@ After all failures handled, use `AskUserQuestion`: "All phases complete. What ne
 ---
 
 ### Rollback (optional)
+
+> Ask: "All tests complete. Want to uninstall the DRA driver and roll back to clean state?"
 
 ```bash
 bash node-team/dra/uninstall.sh

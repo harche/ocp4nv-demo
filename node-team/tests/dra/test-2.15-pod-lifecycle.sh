@@ -15,6 +15,16 @@ gpu_node=$(get_first_gpu_node)
 cleanup_ns "$NS"
 wait_for_ns_deleted "$NS"
 
+# Pick device class based on MIG state
+mig_state=$(oc get node "$gpu_node" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
+if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
+  DEVICE_CLASS="mig.nvidia.com"
+  info "MIG enabled — using $DEVICE_CLASS DeviceClass"
+else
+  DEVICE_CLASS="gpu.nvidia.com"
+  info "Using $DEVICE_CLASS DeviceClass"
+fi
+
 header "Step 1: Create pod with DRA GPU claim"
 apply_yaml "
 apiVersion: v1
@@ -33,7 +43,7 @@ spec:
       requests:
       - name: gpu
         exactly:
-          deviceClassName: gpu.nvidia.com
+          deviceClassName: $DEVICE_CLASS
 ---
 apiVersion: v1
 kind: Pod
@@ -44,7 +54,7 @@ spec:
   containers:
   - name: cuda
     image: ubuntu:22.04
-    command: ['bash', '-c', 'trap \"exit 0\" TERM; sleep 9999 & wait']
+    command: ['bash', '-c', 'nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits > /tmp/gpu-uuid; trap \"exit 0\" TERM; sleep 9999 & wait']
     resources:
       claims:
       - name: gpu
@@ -58,7 +68,15 @@ spec:
 "
 
 wait_for_pod_running "$NS" "lifecycle-pod" 120
-info "Pod running with DRA-allocated GPU"
+
+# Verify GPU was actually allocated
+gpu_uuid=$(oc exec lifecycle-pod -n "$NS" -- cat /tmp/gpu-uuid 2>/dev/null | tr -d '[:space:]')
+if [ -n "$gpu_uuid" ]; then
+  info "Pod running with DRA-allocated GPU (UUID: $gpu_uuid)"
+else
+  error "Pod running but no GPU UUID found"
+  exit 1
+fi
 
 header "Step 2: Record current ResourceClaim state"
 claims_before=$(oc get resourceclaims -n "$NS" --no-headers 2>/dev/null | wc -l)

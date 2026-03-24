@@ -17,13 +17,25 @@ warn()   { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()  { echo -e "${RED}[ERROR]${NC} $*"; }
 header() { echo -e "\n${BLUE}=== $* ===${NC}"; }
 
+GPU_NODE_LABEL="${GPU_NODE_LABEL:-}"
+_resolve_gpu_label() {
+  if [ -n "$GPU_NODE_LABEL" ]; then return; fi
+  if oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o name 2>/dev/null | grep -q .; then
+    GPU_NODE_LABEL="feature.node.kubernetes.io/pci-10de.present=true"
+  else
+    GPU_NODE_LABEL="feature.node.kubernetes.io/pci-0302_10de.present=true"
+  fi
+}
+
 get_gpu_nodes() {
-  oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true \
+  _resolve_gpu_label
+  oc get nodes -l "$GPU_NODE_LABEL" \
     -o jsonpath='{.items[*].metadata.name}'
 }
 
 get_first_gpu_node() {
-  oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true \
+  _resolve_gpu_label
+  oc get nodes -l "$GPU_NODE_LABEL" \
     -o jsonpath='{.items[0].metadata.name}'
 }
 
@@ -141,4 +153,21 @@ run_on_node() {
 # Apply inline YAML from a heredoc
 apply_yaml() {
   echo "$1" | oc apply -f -
+}
+
+# Check if CDMM is active on the GPU node (blocks MIG on Grace-based systems)
+# Returns 0 if MIG is safe, exits with code 2 (skip) if CDMM blocks MIG
+check_cdmm_mig_compatible() {
+  local gpu_node
+  gpu_node=$(get_first_gpu_node)
+  local cdmm_mode
+  cdmm_mode=$(run_on_node "$gpu_node" cat /proc/driver/nvidia/params 2>/dev/null \
+    | grep -i "CoherentGPUMemoryMode" | awk '{print $2}' || true)
+  if [ "$cdmm_mode" = "driver" ]; then
+    warn "CDMM is active on $gpu_node (CoherentGPUMemoryMode=driver)"
+    warn "MIG is incompatible with CDMM on Grace-based systems (GB200/GH200)"
+    warn "See: https://github.com/NVIDIA/cloud-native-docs/pull/260"
+    info "SKIP: MIG test skipped due to CDMM"
+    exit 2
+  fi
 }

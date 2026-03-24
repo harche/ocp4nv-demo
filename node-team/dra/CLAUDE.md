@@ -16,11 +16,13 @@ Manages the transition between device-plugin mode and DRA mode on the cluster. T
 ## install.sh — Step by Step
 
 1. **Apply `gpu-cluster-policy-dra.yaml`** — sets `devicePlugin.enabled: false`
-2. **Wait for device-plugin pods to terminate** — GPU Operator reconciles and removes them
-3. **Wait for nodes to be Ready** — nodes may restart pods
-4. **Add NVIDIA helm repo** — `helm.ngc.nvidia.com/nvidia`
-5. **Helm install `nvidia-dra-driver-gpu`** — into namespace `nvidia-dra-driver-gpu`
-6. **Verify** — checks DRA pods running, ResourceSlices published, DeviceClasses exist
+2. **Clean up stale MPS state** — removes leftover `devicePlugin.config` from ClusterPolicy, ConfigMap, and node labels from device-plugin MPS tests
+3. **Wait for device-plugin pods to terminate** — GPU Operator reconciles and removes them
+4. **Wait for nodes to be Ready** — nodes may restart pods
+5. **Add NVIDIA helm repo** — `helm.ngc.nvidia.com/nvidia`
+6. **Helm install `nvidia-dra-driver-gpu`** — with required flags (see Helm Chart Details)
+7. **Grant privileged SCC** — MPS control daemon needs `hostPID` and `hostPath` access (see OpenShift SCC Requirements)
+8. **Verify** — checks DRA pods running, ResourceSlices published, DeviceClasses exist
 
 ## Helm Chart Details
 
@@ -29,11 +31,27 @@ Manages the transition between device-plugin mode and DRA mode on the cluster. T
 | Chart | `nvidia/nvidia-dra-driver-gpu` | Official NVIDIA DRA driver |
 | Version | `25.12.0` (default, override via `DRA_CHART_VERSION` env var) | Latest stable at time of writing |
 | `nvidiaDriverRoot` | `/run/nvidia/driver` | **Required for OpenShift** when GPU Operator manages the driver (not host-installed) |
+| `gpuResourcesEnabledOverride` | `true` | **Required in v25.12.0** — confirms device plugin is disabled, allows DRA to manage `nvidia.com/gpu` |
+| `featureGates.MPSSupport` | `true` | **Required for MPS sharing** — MPS is behind a feature gate in the DRA driver |
 | Namespace | `nvidia-dra-driver-gpu` | Created automatically |
 
 ### Why `nvidiaDriverRoot=/run/nvidia/driver`?
 
 On OpenShift with the GPU Operator, the NVIDIA driver is not installed on the host at `/`. Instead, the driver container mounts it at `/run/nvidia/driver`. The DRA driver needs this path to find `libnvidia-ml.so` and GPU device files. Setting this incorrectly is the **most common installation failure**.
+
+### OpenShift SCC Requirements for MPS
+
+The DRA driver creates a **separate Deployment** for each MPS control daemon (one per ResourceClaim using MPS). This deployment uses the `default` service account and requires:
+- `hostPID: true`
+- `hostPath` volumes
+- Privileged security context
+
+On OpenShift, the `default` SA is restricted. The install script grants the `privileged` SCC:
+```bash
+oc adm policy add-scc-to-user privileged -z default -n nvidia-dra-driver-gpu
+```
+
+**This is different from device-plugin MPS**, where MPS runs inside the device-plugin pod (which already has the right SCC). In DRA mode, the MPS daemon is a standalone deployment that needs its own permissions.
 
 ## uninstall.sh — Step by Step
 
@@ -47,6 +65,7 @@ On OpenShift with the GPU Operator, the NVIDIA driver is not installed on the ho
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DRA_CHART_VERSION` | `25.12.0` | Override helm chart version |
+| `DRIVER_PREINSTALLED` | `false` | Set to `true` for RHCOS4NV (selects ClusterPolicy with `driver.enabled: false`) |
 
 ---
 

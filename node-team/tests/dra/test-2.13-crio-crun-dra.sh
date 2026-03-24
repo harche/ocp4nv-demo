@@ -21,6 +21,17 @@ else
 fi
 
 header "Deploy DRA pod and check CDI injection"
+
+# Pick device class based on MIG state
+mig_state=$(oc get node "$gpu_node" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
+if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
+  DEVICE_CLASS="mig.nvidia.com"
+  info "MIG enabled — using $DEVICE_CLASS DeviceClass"
+else
+  DEVICE_CLASS="gpu.nvidia.com"
+  info "Using $DEVICE_CLASS DeviceClass"
+fi
+
 cleanup_ns "$NS"
 wait_for_ns_deleted "$NS"
 
@@ -41,7 +52,7 @@ spec:
       requests:
       - name: gpu
         exactly:
-          deviceClassName: gpu.nvidia.com
+          deviceClassName: $DEVICE_CLASS
 ---
 apiVersion: v1
 kind: Pod
@@ -93,6 +104,15 @@ if [ -n "$cdi_specs" ]; then
   echo "$cdi_specs"
 else
   warn "Could not list CDI specs on node"
+fi
+
+# Verify CDI spec contains nvidia device nodes
+cdi_content=$(run_on_node "$gpu_node" cat /var/run/cdi/management.nvidia.com-gpu.yaml 2>/dev/null || echo "")
+if echo "$cdi_content" | grep -q "/dev/nvidia"; then
+  device_count=$(echo "$cdi_content" | grep -c "path: /dev/nvidia" || echo "0")
+  info "CDI spec contains $device_count NVIDIA device node entries"
+else
+  warn "CDI spec does not contain NVIDIA device nodes"
 fi
 
 info "CRI-O + crun + DRA validation passed"

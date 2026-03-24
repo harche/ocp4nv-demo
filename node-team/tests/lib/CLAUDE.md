@@ -35,8 +35,9 @@
 
 | Function | Returns |
 |----------|---------|
-| `get_gpu_nodes` | Space-separated list of node names with NVIDIA GPUs (uses NFD label `pci-10de.present`) |
+| `get_gpu_nodes` | Space-separated list of node names with NVIDIA GPUs (auto-detects NFD label: `pci-10de.present` or `pci-0302_10de.present`) |
 | `get_first_gpu_node` | First GPU node name |
+| `_resolve_gpu_label` | Internal: sets `GPU_NODE_LABEL` env var to the correct NFD label (called automatically by `get_gpu_nodes`/`get_first_gpu_node`). Override with `GPU_NODE_LABEL` env var. |
 | `get_gpu_count <node>` | Allocatable `nvidia.com/gpu` count on a node |
 
 ### Wait Functions

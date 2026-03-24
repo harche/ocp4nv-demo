@@ -98,14 +98,36 @@ Several tests accept env vars for hardware adaptation:
 
 | Variable | Default | Used by |
 |----------|---------|---------|
-| `MIG_PROFILE` | `all-1g.5gb` | test-1.4, test-2.5 |
+| `MIG_PROFILE` | `all-1g.5gb` | test-1.4, test-2.5, test-2.8, test-2.9 |
+| `MIG_PROFILE_SMALL` | `1g.5gb` | test-1.5, test-2.5, test-2.8, test-2.9 |
+| `MIG_PROFILE_MEDIUM` | `3g.20gb` | test-2.8 |
+| `MIG_PROFILE_LARGE` | `7g.40gb` | test-2.9 |
 | `MIG_RESOURCE` | `nvidia.com/mig-1g.5gb` | test-1.5 |
 | `MPS_REPLICAS` | `4` | test-1.6 |
 | `GPU_PRODUCT_PATTERN` | `a100` | test-2.7 |
+| `GPU_EXPECTED_ARCH` | _(empty)_ | test-2.1 |
+| `GPU_EXPECTED_CUDA_CAP` | _(empty)_ | test-2.1 |
+| `DRIVER_PREINSTALLED` | `false` | dra/install.sh, dra/uninstall.sh |
 
-When moving to Voyager/GB200, override these:
+### A100 (default — no overrides needed)
 ```bash
-GPU_PRODUCT_PATTERN=gb200 MIG_PROFILE=all-1g.10gb tests/dra/run-all.sh
+tests/device-plugin/run-all.sh
+tests/dra/run-all.sh
+```
+
+### GB200 / Voyager (RHCOS4NV)
+```bash
+export DRIVER_PREINSTALLED=true
+export MIG_PROFILE=all-1g.24gb
+export MIG_PROFILE_SMALL=1g.24gb
+export MIG_PROFILE_MEDIUM=3g.95gb
+export MIG_PROFILE_LARGE=7g.189gb
+export MIG_RESOURCE=nvidia.com/mig-1g.24gb
+export GPU_PRODUCT_PATTERN=gb200
+export GPU_EXPECTED_ARCH=Blackwell
+export GPU_EXPECTED_CUDA_CAP=10.0.0
+tests/device-plugin/run-all.sh
+tests/dra/run-all.sh
 ```
 
 ---
@@ -138,7 +160,7 @@ If `run-all.sh` itself exits non-zero, at least one test failed.
    # Check for leftover namespaces
    oc get ns | grep -E '^test-(dp|dra)-'
    # Check MIG state
-   GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o jsonpath='{.items[0].metadata.name}')
+   GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
    oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
    ```
 4. **Clean up and retry the single test**:
