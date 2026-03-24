@@ -367,6 +367,25 @@ Mems_allowed_list:	0
 
 CPU pinned to core 6 (not all 12), GPU on NUMA 0, memory on NUMA 0 — proper alignment.
 
+**Final rerun with proper assertions (exit 2 on SKIP, exit 1 on assertion failure):**
+```
+=== Checking Topology Manager policy on harpatil00003cf-t8jxh-master-0 ===
+[INFO] Topology Manager policy: single-numa-node
+
+=== Deploy guaranteed QoS pod with GPU ===
+pod/topo-test created
+[INFO] Waiting for pod topo-test to be running (timeout: 120s)...
+pod/topo-test condition met
+
+=== Verifying NUMA alignment ===
+[INFO] Pinned CPUs: 6 (node has 12)
+[INFO] Memory NUMA: 0
+[INFO] CPU pinning verified (6 is a subset of 0-11)
+[INFO] CPU 6 is on NUMA node: 0
+[INFO] CPU (NUMA 0) and memory (NUMA 0) aligned
+[INFO] Topology test passed — CPU pinned (6), NUMA aligned (node 0), scheduled under single-numa-node policy
+```
+
 **Result:** PASS
 
 ---
@@ -416,6 +435,24 @@ pid 1's current affinity mask: 104
 ```
 
 CPU pinned to cores 2,8 (not all 12) — `cpuManagerPolicy: static` working.
+
+**Final rerun with proper assertions (exit 2 on SKIP, exit 1 on assertion failure):**
+```
+=== Checking CPU Manager policy on harpatil00003cf-t8jxh-master-0 ===
+[INFO] CPU Manager policy: static
+
+=== Deploy guaranteed QoS pod with CPU + GPU ===
+pod/cpu-gpu-test created
+[INFO] Waiting for pod cpu-gpu-test to be running (timeout: 120s)...
+pod/cpu-gpu-test condition met
+
+=== Verifying CPU pinning ===
+[INFO] Pinned CPUs: 2,8 (requested 2, node has 12)
+[INFO] GPU UUID: GPU-7f94c45d-05a3-7734-7353-7903e2de1dbe
+[INFO] CPU pinning verified: 2 CPUs pinned (2,8)
+[INFO] GPU allocated (GPU-7f94c45d-05a3-7734-7353-7903e2de1dbe)
+[INFO] CPU Manager test passed — 2 CPUs pinned (2,8), GPU allocated, guaranteed QoS
+```
 
 **Result:** PASS
 
