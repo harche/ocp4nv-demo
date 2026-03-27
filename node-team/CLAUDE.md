@@ -6,8 +6,8 @@ Test infrastructure for validating NVIDIA GPU support on OpenShift 4.21, coverin
 
 | Jira | What | Tests |
 |------|------|-------|
-| [OCPNODE-4138](https://redhat.atlassian.net/browse/OCPNODE-4138) | GPU Operator in **device-plugin** mode | `tests/device-plugin/test-1.*.sh` (11 tests) |
-| [OCPNODE-4170](https://redhat.atlassian.net/browse/OCPNODE-4170) | NVIDIA **DRA** (Dynamic Resource Allocation) driver | `tests/dra/test-2.*.sh` (17 tests) |
+| [OCPNODE-4138](https://redhat.atlassian.net/browse/OCPNODE-4138) | GPU Operator in **device-plugin** mode | `tests/device-plugin/test-1.*.sh` (9 tests) |
+| [OCPNODE-4170](https://redhat.atlassian.net/browse/OCPNODE-4170) | NVIDIA **DRA** (Dynamic Resource Allocation) driver | `tests/dra/test-2.*.sh` (13 tests) |
 
 This lives under `node-team/` to avoid disturbing the parent repo (`ocp4nv-demo`), which is owned by a different team and focused on custom RHCOS4NV images for Voyager/GB200 hardware.
 
@@ -16,7 +16,7 @@ This lives under `node-team/` to avoid disturbing the parent repo (`ocp4nv-demo`
 - **Primary (now):** GCP `a2-highgpu-2g` — 2x A100 40GB, amd64, standard OCP 4.21
 - **Future (Voyager):** GB200 Grace Hopper — aarch64, RHCOS4NV custom image
 
-The test scripts are hardware-agnostic where possible. Hardware-specific bits (CEL selectors, MIG profiles) use environment variables for overrides — see `tests/CLAUDE.md` for the full list.
+The test scripts are hardware-agnostic where possible. Hardware-specific bits (CEL selectors) use environment variables for overrides — see `tests/CLAUDE.md` for the full list.
 
 ## Architecture
 
@@ -24,9 +24,7 @@ The test scripts are hardware-agnostic where possible. Hardware-specific bits (C
 node-team/
 ├── CLAUDE.md                                    <- you are here
 ├── gpu-cluster-policy-standard.yaml             <- devicePlugin: true  (Phase 1)
-├── gpu-cluster-policy-standard-mig.yaml         <- devicePlugin: true  + mig.strategy: mixed
 ├── gpu-cluster-policy-dra.yaml                  <- devicePlugin: false (Phase 2)
-├── gpu-cluster-policy-dra-mig.yaml              <- devicePlugin: false + mig.strategy: mixed
 ├── gpu-cluster-policy-standard-rhcos4nv.yaml    <- same + driver: false (Voyager)
 ├── gpu-cluster-policy-dra-rhcos4nv.yaml         <- same + driver: false (Voyager)
 ├── dra/                                         <- DRA driver install/uninstall
@@ -43,28 +41,20 @@ node-team/
 
 ## ClusterPolicy Variants
 
-All policies install the full GPU Operator stack (driver, toolkit, DCGM, GFD, MIG manager, CDI). They differ in device-plugin mode, driver, and MIG strategy:
+All policies install the full GPU Operator stack (driver, toolkit, DCGM, GFD, CDI). They differ in device-plugin mode and driver:
 
-| File | `devicePlugin` | `driver` | `mig.strategy` | Used for |
-|------|---------------|----------|----------------|----------|
-| `gpu-cluster-policy-standard.yaml` | **true** | true | — | Device-plugin tests — A100/standard RHCOS |
-| `gpu-cluster-policy-standard-mig.yaml` | **true** | true | **mixed** | Device-plugin + MIG tests — A100/standard RHCOS |
-| `gpu-cluster-policy-dra.yaml` | **false** | true | — | DRA tests — A100/standard RHCOS |
-| `gpu-cluster-policy-dra-mig.yaml` | **false** | true | **mixed** | DRA + MIG tests — A100/standard RHCOS |
-| `gpu-cluster-policy-standard-rhcos4nv.yaml` | **true** | **false** | — | Device-plugin tests — Voyager/GB200 (driver baked in) |
-| `gpu-cluster-policy-dra-rhcos4nv.yaml` | **false** | **false** | — | DRA tests — Voyager/GB200 (driver baked in) |
+| File | `devicePlugin` | `driver` | Used for |
+|------|---------------|----------|----------|
+| `gpu-cluster-policy-standard.yaml` | **true** | true | Device-plugin tests — A100/standard RHCOS |
+| `gpu-cluster-policy-dra.yaml` | **false** | true | DRA tests — A100/standard RHCOS |
+| `gpu-cluster-policy-standard-rhcos4nv.yaml` | **true** | **false** | Device-plugin tests — Voyager/GB200 (driver baked in) |
+| `gpu-cluster-policy-dra-rhcos4nv.yaml` | **false** | **false** | DRA tests — Voyager/GB200 (driver baked in) |
 
 **Common settings across all policies:**
 - `daemonsets: {}` — required by GPU Operator v26+
-- `migManager.env: WITH_REBOOT=true` — required on GCP (and any VM where GPU reset is not supported); triggers node reboot on MIG mode changes
 - CDI enabled in all (required for DRA, harmless for device-plugin)
 
-The RHCOS4NV variants set `driver.enabled: false` because the NVIDIA driver (590.x) is pre-installed in the OS image. No MIG variants for RHCOS4NV (MIG is skipped on GB200/Voyager due to CDMM).
-
-**MIG state transitions require switching ClusterPolicy:**
-- Before enabling MIG: apply the `-mig` variant (adds `mig.strategy: mixed`)
-- Before disabling MIG: reapply the standard variant (removes `mig.strategy`)
-- The MIG manager needs `WITH_REBOOT=true` in both cases to handle GPU reset failures on VMs
+The RHCOS4NV variants set `driver.enabled: false` because the NVIDIA driver (590.x) is pre-installed in the OS image.
 
 ---
 
@@ -86,8 +76,7 @@ You do NOT need to ask before read-only verification commands (`oc get`, `oc wai
 
 ### Important Patience Notes
 
-- **MIG enable/disable** triggers a node reboot (GPU reset is not supported on GCP VMs). The full cycle is: label node → node reboots → wait for Ready → wait for GPU operator pods → verify MIG resources. Budget 5-10 minutes. Before enabling MIG, apply the `-mig` ClusterPolicy variant. Before disabling, reapply the standard variant.
-- **MPS enable** requires a ConfigMap with `flags.migStrategy: none` and `sharing.mps` config, plus a ClusterPolicy patch with both `config.name` and `config.default` pointing to the ConfigMap key. MIG must be fully disabled first.
+- **MPS enable** requires a ConfigMap with `flags.migStrategy: none` and `sharing.mps` config, plus a ClusterPolicy patch with both `config.name` and `config.default` pointing to the ConfigMap key.
 - **Driver compilation** on first ClusterPolicy apply takes 3-10 minutes. Poll status periodically rather than timing out early.
 - **NFD labeling** takes 30-60s after creating the NFD instance. The GPU label is `pci-0302_10de.present` (3D controller class) on newer NFD versions, not the older `pci-10de.present`. The test library (`lib/common.sh`) auto-detects both via `_resolve_gpu_label`.
 
@@ -132,7 +121,7 @@ oc apply -f gpu-operator-install.yaml
 Then automatically wait for the CSV to reach `Succeeded`.
 
 **Step 0.4 — Apply ClusterPolicy (device-plugin mode):**
-> Ask: "GPU operator CSV succeeded. Ready to apply the ClusterPolicy? This will deploy the driver, toolkit, DCGM, device-plugin, and MIG manager on GPU nodes."
+> Ask: "GPU operator CSV succeeded. Ready to apply the ClusterPolicy? This will deploy the driver, toolkit, DCGM, and device-plugin on GPU nodes."
 
 For A100 / standard RHCOS (driver compiled at runtime):
 ```bash
@@ -158,7 +147,7 @@ After verifying, use `AskUserQuestion`: "Phase 0 setup complete — all GPU oper
 
 ### Phase 1: Device Plugin Tests (OCPNODE-4138)
 
-> Ask: "Phase 0 complete — all GPU operator pods are Running and nvidia.com/gpu is advertised. Ready to run device-plugin tests (11 tests, 1.1–1.11)?"
+> Ask: "Phase 0 complete — all GPU operator pods are Running and nvidia.com/gpu is advertised. Ready to run device-plugin tests (9 tests)?"
 
 ```bash
 bash node-team/tests/device-plugin/run-all.sh
@@ -188,7 +177,7 @@ Takes 3-5 minutes. See `dra/CLAUDE.md` for troubleshooting if it fails.
 
 ### Phase 2: DRA Tests (OCPNODE-4170)
 
-> Ask: "DRA driver installed and ready. Ready to run DRA tests (17 tests, 2.1–2.17)?"
+> Ask: "DRA driver installed and ready. Ready to run DRA tests (13 tests)?"
 
 ```bash
 bash node-team/tests/dra/run-all.sh
@@ -217,7 +206,6 @@ bash node-team/dra/uninstall.sh
 
 - **Device Plugin mode**: Traditional Kubernetes device plugin. GPUs are `nvidia.com/gpu` extended resources in pod spec `resources.limits`.
 - **DRA mode**: Kubernetes Dynamic Resource Allocation (GA in k8s 1.34 / OCP 4.21). GPUs are allocated via `ResourceClaim` objects with CEL selectors. Supports richer features: attribute-based selection, prioritized alternatives, admin access.
-- **MIG (Multi-Instance GPU)**: A100/H100 feature. Partitions one GPU into isolated slices (e.g., 7x `1g.5gb` on A100-40GB). Managed by GPU Operator's MIG manager via node label `nvidia.com/mig.config`.
 - **MPS (Multi-Process Service)**: NVIDIA's GPU sharing mechanism. Multiple processes share a GPU with better isolation than time-slicing. Configured differently in device-plugin mode (ConfigMap) vs DRA mode (GpuConfig in ResourceClaim).
 - **CDI (Container Device Interface)**: Standard spec for injecting devices into containers. Used by both crun and the DRA path.
 

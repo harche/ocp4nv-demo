@@ -35,24 +35,13 @@ bash node-team/tests/device-plugin/test-1.2-basic-gpu.sh
 | 1.2 | `test-1.2-basic-gpu.sh` | Runs `vectoradd-cuda11.6.0` pod with `nvidia.com/gpu: 1` | Deletes ns `test-dp-basic-gpu` |
 | 1.3 | `test-1.3-multi-gpu.sh` | Pod with `nvidia.com/gpu: 2`, checks it sees exactly 2 GPUs. **Skips gracefully** if node has < 2 GPUs. | Deletes ns `test-dp-multi-gpu` |
 
-### MIG (tests 1.4–1.5)
-
-These modify node state. 1.4 enables MIG, 1.5 uses it.
-
-| Test | Script | What it does | Side effects |
-|------|--------|-------------|-------------|
-| 1.4 | `test-1.4-mig-enable.sh` | Labels node with `nvidia.com/mig.config=all-1g.5gb`, waits for MIG manager to create slices, verifies `nvidia.com/mig-1g.5gb` resources appear | **Enables MIG on GPU** (persists) |
-| 1.5 | `test-1.5-mig-workload.sh` | Runs vectorAdd requesting `nvidia.com/mig-1g.5gb: 1` | Deletes ns `test-dp-mig-workload` |
-
-**MIG profiles on A100-40GB:** `1g.5gb` (x7), `2g.10gb` (x3), `3g.20gb` (x2), `4g.20gb` (x1), `7g.40gb` (x1). Override with `MIG_PROFILE` env var.
-
 ### MPS (tests 1.6–1.7)
 
-1.6 disables MIG first, then enables MPS. 1.7 runs concurrent workloads.
+1.6 enables MPS. 1.7 runs concurrent workloads.
 
 | Test | Script | What it does | Side effects |
 |------|--------|-------------|-------------|
-| 1.6 | `test-1.6-mps-enable.sh` | Disables MIG, creates device-plugin ConfigMap for MPS (4 replicas), patches ClusterPolicy, labels node, verifies `nvidia.com/gpu` count increases | **Modifies ClusterPolicy** + creates ConfigMap |
+| 1.6 | `test-1.6-mps-enable.sh` | Creates device-plugin ConfigMap for MPS (4 replicas), patches ClusterPolicy, labels node, verifies `nvidia.com/gpu` count increases | **Modifies ClusterPolicy** + creates ConfigMap |
 | 1.7 | `test-1.7-mps-concurrent.sh` | Deploys 3 pods each requesting `nvidia.com/gpu: 1`, verifies all run concurrently (only possible with MPS/time-slicing) | Deletes ns `test-dp-mps-concurrent` |
 
 **How MPS works in device-plugin mode:**
@@ -79,11 +68,9 @@ These are mostly verification/informational tests.
 The tests modify node state in this sequence:
 
 ```
-Start -> [default, no MIG]
+Start -> [default]
   1.1-1.3: no state change
-  1.4: MIG ON (all-1g.5gb)
-  1.5: uses MIG
-  1.6: MIG OFF -> MPS ON
+  1.6: MPS ON
   1.7: uses MPS
   1.8-1.11: no state change (MPS still on)
 ```
@@ -99,8 +86,6 @@ After all tests, MPS config remains. The DRA transition (`dra/install.sh`) handl
 | 1.1 | **PASS** — GPU operator pods healthy, `nvidia.com/gpu` advertised |
 | 1.2 | **PASS** — vectorAdd completes with "Test PASSED" |
 | 1.3 | **PASS** on `a2-highgpu-2g` (2 GPUs), **SKIP** on `a2-highgpu-1g` (1 GPU). A skip is NOT a failure. |
-| 1.4 | **PASS** — MIG resources appear within ~5 minutes |
-| 1.5 | **PASS** — vectorAdd on MIG slice completes |
 | 1.6 | **PASS** — `nvidia.com/gpu` count increases to MPS replica count |
 | 1.7 | **PASS** — 3 pods run concurrently sharing GPU |
 | 1.8 | **PASS** — crun detected, CDI specs present |
@@ -131,33 +116,6 @@ oc logs <failing-pod> -n nvidia-gpu-operator --all-containers
   oc debug node/<GPU_NODE> -- chroot /host lspci | grep -i nvidia
   ```
 
-### MIG reconfiguration stuck (test 1.4)
-
-**Symptom:** After labeling node with `nvidia.com/mig.config=all-1g.5gb`, MIG resources never appear in node allocatable.
-
-**Diagnose:**
-```bash
-GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
-oc logs -n nvidia-gpu-operator $(oc get pods -n nvidia-gpu-operator -l app=nvidia-mig-manager -o name | head -1)
-oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
-```
-
-**Common causes:**
-- **Wrong ClusterPolicy** — must apply the `-mig` variant (with `mig.strategy: mixed`) before enabling MIG
-- **No WITH_REBOOT** — on GCP VMs, GPU reset is not supported. The MIG manager needs `WITH_REBOOT=true` env var to trigger a node reboot for MIG mode changes. All ClusterPolicy files should include this.
-- MIG manager pod not running — check `oc get pods -n nvidia-gpu-operator | grep mig`
-- MIG config label typo — must be exactly `nvidia.com/mig.config`, value must be a valid profile like `all-1g.5gb`
-- `mig.config.state = failed` — check MIG manager logs for "Resetting GPU ... is not supported" which means WITH_REBOOT is missing
-
-**Fix:** Apply correct ClusterPolicy, reset and retry:
-```bash
-oc apply -f node-team/gpu-cluster-policy-standard-mig.yaml   # adds mig.strategy: mixed + WITH_REBOOT
-sleep 30
-oc label node $GPU_NODE nvidia.com/mig.config=all-disabled --overwrite
-# Wait for reboot (node goes NotReady then comes back)
-oc label node $GPU_NODE nvidia.com/mig.config=all-1g.5gb --overwrite
-```
-
 ### MPS not working (tests 1.6/1.7)
 
 **Symptom:** After MPS enable, `nvidia.com/gpu` count doesn't increase to the replica count.
@@ -174,7 +132,6 @@ oc get node $GPU_NODE --show-labels | grep device-plugin.config
 **Common causes:**
 - **ConfigMap missing `flags.migStrategy: none`** — the MPS config must include `flags: migStrategy: none` alongside the `sharing.mps` block
 - **ClusterPolicy patch missing `default` key** — the patch must include both `config.name` and `config.default` pointing to the ConfigMap data key (e.g., `"default": "mps"`)
-- **MIG still enabled** — MPS cannot work with MIG active. Disable MIG first (reapply standard ClusterPolicy + label `all-disabled`, wait for reboot)
 - **MPS control daemon crash** — if you see `panic: runtime error: index out of range` in the MPS control daemon logs, clean up and reapply: delete the ConfigMap, remove the `device-plugin.config` label, remove `devicePlugin.config` from ClusterPolicy, then redo the steps in order
 - Device plugin pod didn't restart after ConfigMap change — force restart:
   ```bash
@@ -194,7 +151,6 @@ oc get events -n <namespace> --sort-by=.lastTimestamp | tail -10
 
 **Common causes:**
 - `Insufficient nvidia.com/gpu`: all GPUs allocated — check for leftover test namespaces: `oc get ns | grep test-dp-`
-- MIG still enabled when test expects full GPU — reset: `oc label node $GPU_NODE nvidia.com/mig.config=all-disabled --overwrite`
 
 ---
 

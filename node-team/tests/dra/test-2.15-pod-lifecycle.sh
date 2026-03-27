@@ -15,15 +15,7 @@ gpu_node=$(get_first_gpu_node)
 cleanup_ns "$NS"
 wait_for_ns_deleted "$NS"
 
-# Pick device class based on MIG state
-mig_state=$(oc get node "$gpu_node" -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))" 2>/dev/null || echo "none")
-if [ "$mig_state" != "all-disabled" ] && [ "$mig_state" != "none" ]; then
-  DEVICE_CLASS="mig.nvidia.com"
-  info "MIG enabled — using $DEVICE_CLASS DeviceClass"
-else
-  DEVICE_CLASS="gpu.nvidia.com"
-  info "Using $DEVICE_CLASS DeviceClass"
-fi
+DEVICE_CLASS="gpu.nvidia.com"
 
 header "Step 1: Create pod with DRA GPU claim"
 apply_yaml "

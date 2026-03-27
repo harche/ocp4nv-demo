@@ -32,7 +32,6 @@ bash node-team/tests/dra/test-2.3-full-gpu.sh
 | GPU in pod spec | `resources.limits: nvidia.com/gpu: 1` | `resources.claims: [{name: gpu}]` + `resourceClaims` |
 | GPU selection | None (any available GPU) | CEL expressions on device attributes |
 | Sharing config | ConfigMap + node labels | Inline in `ResourceClaim` via `GpuConfig` |
-| MIG allocation | `nvidia.com/mig-1g.5gb: 1` | CEL: `device.attributes['gpu.nvidia.com'].profile == '1g.5gb'` |
 | API objects | None (extended resources) | `ResourceClaim`, `ResourceClaimTemplate`, `DeviceClass`, `ResourceSlice` |
 
 ## Test Inventory
@@ -42,7 +41,7 @@ bash node-team/tests/dra/test-2.3-full-gpu.sh
 | Test | Script | What it validates |
 |------|--------|------------------|
 | 2.1 | `test-2.1-dra-deploy.sh` | DRA driver pods running, ResourceSlices published with GPU attributes (productName, memory) |
-| 2.2 | `test-2.2-deviceclass.sh` | `gpu.nvidia.com` DeviceClass exists. `mig.nvidia.com` checked but not required (appears after MIG enable). |
+| 2.2 | `test-2.2-deviceclass.sh` | `gpu.nvidia.com` DeviceClass exists. |
 
 ### Core GPU via DRA (tests 2.3–2.4)
 
@@ -51,17 +50,11 @@ bash node-team/tests/dra/test-2.3-full-gpu.sh
 | 2.3 | `test-2.3-full-gpu.sh` | `ResourceClaimTemplate` -> full GPU allocation -> vectorAdd passes. The basic "DRA works" test. |
 | 2.4 | `test-2.4-device-sharing.sh` | Two containers in one pod share a `ResourceClaim`. Verifies both see the same GPU UUID. |
 
-### MIG via DRA (test 2.5)
-
-| Test | Script | What it validates |
-|------|--------|------------------|
-| 2.5 | `test-2.5-mig-via-dra.sh` | Enables MIG (`nvidia.com/mig.config` label), waits for MIG ResourceSlices to appear, deploys pod with CEL selector `profile == '1g.5gb'` |
-
 ### MPS via DRA (test 2.6)
 
 | Test | Script | What it validates |
 |------|--------|------------------|
-| 2.6 | `test-2.6-mps-via-dra.sh` | Disables MIG, deploys pod with `GpuConfig` sharing strategy `MPS` inline in the ResourceClaim. Two containers share GPU via MPS. |
+| 2.6 | `test-2.6-mps-via-dra.sh` | Deploys pod with `GpuConfig` sharing strategy `MPS` inline in the ResourceClaim. Two containers share GPU via MPS. |
 
 **How MPS works in DRA mode** (different from device plugin):
 ```yaml
@@ -89,14 +82,6 @@ These test the three DRA features that are GA in OCP 4.21:
 |------|--------|------------------|
 | 2.7 | `test-2.7-attribute-select.sh` | CEL selector filters by `productName` (default pattern: `a100`). Verifies allocated GPU matches. Override with `GPU_PRODUCT_PATTERN` env var for other hardware. |
 
-#### Prioritized Alternatives (OCPSTRAT-2115)
-
-| Test | Script | What it validates |
-|------|--------|------------------|
-| 2.8 | `test-2.8-preferred-device.sh` | `firstAvailable` with preferred MIG profile (3g.20gb) and fallback (1g.5gb). Verifies pod gets allocated. |
-| 2.9 | `test-2.9-fallback.sh` | Requests impossible preferred profile (7g.40gb when only 1g.5gb exist), verifies fallback to 1g.5gb works. |
-| 2.10 | `test-2.10-full-exhaust.sh` | All alternatives use non-existent profile. Verifies pod stays **Pending** with clear scheduling event message. |
-
 #### Admin Access (OCPSTRAT-2397)
 
 | Test | Script | What it validates |
@@ -117,14 +102,11 @@ These test the three DRA features that are GA in OCP 4.21:
 ## State Machine
 
 ```
-Start -> [MIG off after device-plugin tests, MPS config may exist]
-  2.1-2.4: no MIG state change (full GPU tests)
-  2.5: MIG ON (all-1g.5gb)
-  2.6: MIG OFF
+Start -> [after device-plugin tests, MPS config may exist]
+  2.1-2.4: no state change (full GPU tests)
+  2.6: no state change (MPS via DRA)
   2.7: no state change (full GPU, attribute select)
-  2.8-2.9: MIG ON (for firstAvailable tests)
-  2.10: MIG ON (uses impossible selector)
-  2.11-2.12: no MIG state change (admin access)
+  2.11-2.12: no state change (admin access)
   2.13-2.17: no state change (verification tests)
 ```
 
@@ -135,10 +117,6 @@ Start -> [MIG off after device-plugin tests, MPS config may exist]
 | `GPU_PRODUCT_PATTERN` | `a100` | test-2.7 | CEL regex pattern for productName matching |
 | `GPU_EXPECTED_ARCH` | _(empty)_ | test-2.1 | Expected GPU architecture in ResourceSlices (informational) |
 | `GPU_EXPECTED_CUDA_CAP` | _(empty)_ | test-2.1 | Expected CUDA compute capability (informational) |
-| `MIG_PROFILE` | `all-1g.5gb` | test-2.5, test-2.8, test-2.9 | MIG profile for node label |
-| `MIG_PROFILE_SMALL` | `1g.5gb` | test-2.5, test-2.8, test-2.9 | Smallest MIG profile name (used in CEL selectors) |
-| `MIG_PROFILE_MEDIUM` | `3g.20gb` | test-2.8 | Medium MIG profile for preferred device test |
-| `MIG_PROFILE_LARGE` | `7g.40gb` | test-2.9 | Large MIG profile used as "impossible" in fallback test |
 
 ### Adapting for Voyager/GB200
 
@@ -147,17 +125,12 @@ export DRIVER_PREINSTALLED=true
 export GPU_PRODUCT_PATTERN=gb200
 export GPU_EXPECTED_ARCH=Blackwell
 export GPU_EXPECTED_CUDA_CAP=10.0.0
-export MIG_PROFILE=all-1g.24gb
-export MIG_PROFILE_SMALL=1g.24gb
-export MIG_PROFILE_MEDIUM=3g.95gb
-export MIG_PROFILE_LARGE=7g.189gb
-export MIG_RESOURCE=nvidia.com/mig-1g.24gb
 tests/dra/run-all.sh
 ```
 
 ## Key DRA API Objects
 
-- **ResourceSlice**: Published by the DRA driver. Lists available devices with attributes (productName, UUID, memory, MIG profile, etc.). One per node per driver.
+- **ResourceSlice**: Published by the DRA driver. Lists available devices with attributes (productName, UUID, memory, etc.). One per node per driver.
 - **DeviceClass**: Cluster-scoped. Names a class of devices (e.g., `gpu.nvidia.com`). Created by the DRA driver.
 - **ResourceClaim**: Namespace-scoped. A request for device(s). Can use `exactly` (specific device class + selectors) or `firstAvailable` (prioritized list).
 - **ResourceClaimTemplate**: Like ResourceClaim but creates a new claim per pod (cleaned up with the pod).
@@ -172,12 +145,8 @@ tests/dra/run-all.sh
 | 2.2 | **PASS** — `gpu.nvidia.com` DeviceClass exists |
 | 2.3 | **PASS** — vectorAdd via DRA allocation completes |
 | 2.4 | **PASS** — both containers see same GPU UUID |
-| 2.5 | **PASS** — MIG ResourceSlices appear, pod gets 1g.5gb slice |
 | 2.6 | **PASS** — two containers share GPU via MPS |
 | 2.7 | **PASS** — CEL selector matches A100 productName |
-| 2.8 | **PASS** — pod gets preferred or fallback MIG profile |
-| 2.9 | **PASS** — fallback to 1g.5gb when preferred profile unavailable |
-| 2.10 | **PASS** — pod stays Pending with scheduling event |
 | 2.11 | **PASS** if `adminAccess` is supported in OCP 4.21 (see caveat below). |
 | 2.12 | **PASS** if `adminAccess` is supported (pod stays Pending in unlabeled ns). |
 | 2.13 | **PASS** — crun + CDI injection verified via DRA path |
@@ -243,36 +212,10 @@ oc get events -n <namespace> --sort-by=.lastTimestamp | tail -10
   ```bash
   oc get ns | grep -E '^test-dra-' | awk '{print $1}' | xargs -r oc delete ns
   ```
-- MIG enabled when test expects full GPU (or vice versa) — check node label:
-  ```bash
-  GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
-  oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
-  ```
 - CEL selector doesn't match any device — inspect available attributes:
   ```bash
   oc get resourceslices -o yaml | grep -A5 productName
   ```
-
-### MIG ResourceSlices not appearing (test 2.5)
-
-**Symptom:** After enabling MIG, `oc get resourceslices` doesn't show MIG devices.
-
-**Diagnose:**
-```bash
-GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
-oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
-oc logs -n nvidia-gpu-operator $(oc get pods -n nvidia-gpu-operator -l app=nvidia-mig-manager -o name | head -1)
-oc get pods -n nvidia-dra-driver-gpu
-```
-
-The DRA driver must restart/re-enumerate after MIG reconfiguration. This can take up to 3 minutes. If still missing:
-
-**Fix:** Restart the DRA driver pods to force re-enumeration:
-```bash
-oc delete pods -n nvidia-dra-driver-gpu --all
-sleep 30
-oc get resourceslices -o yaml | grep profile
-```
 
 ### MPS via DRA not working (test 2.6)
 
@@ -303,12 +246,6 @@ oc logs mps-pod -c mps-ctr0 -n test-dra-mps
   oc delete pods -n nvidia-dra-driver-gpu --all
   # Wait for DRA pods to restart, then retry test
   ```
-
-- **MIG still enabled** — MPS requires full GPU mode. Check:
-  ```bash
-  oc get node $GPU_NODE -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['labels'].get('nvidia.com/mig.config','none'))"
-  ```
-  If not `all-disabled`, disable MIG first (triggers reboot).
 
 - `GpuConfig` API version mismatch — the opaque parameters use `resource.nvidia.com/v1beta1`. If the DRA driver version doesn't support this, check DRA driver logs.
 

@@ -92,7 +92,7 @@ oc get resourceslices -o yaml | grep -E 'productName|architecture|memory'
 ```bash
 oc get deviceclasses
 ```
-Expected: `gpu.nvidia.com` exists. `mig.nvidia.com` will appear after MIG is enabled.
+Expected: `gpu.nvidia.com` exists.
 
 ---
 

@@ -154,20 +154,3 @@ run_on_node() {
 apply_yaml() {
   echo "$1" | oc apply -f -
 }
-
-# Check if CDMM is active on the GPU node (blocks MIG on Grace-based systems)
-# Returns 0 if MIG is safe, exits with code 2 (skip) if CDMM blocks MIG
-check_cdmm_mig_compatible() {
-  local gpu_node
-  gpu_node=$(get_first_gpu_node)
-  local cdmm_mode
-  cdmm_mode=$(run_on_node "$gpu_node" cat /proc/driver/nvidia/params 2>/dev/null \
-    | grep -i "CoherentGPUMemoryMode" | awk '{print $2}' || true)
-  if [ "$cdmm_mode" = "driver" ]; then
-    warn "CDMM is active on $gpu_node (CoherentGPUMemoryMode=driver)"
-    warn "MIG is incompatible with CDMM on Grace-based systems (GB200/GH200)"
-    warn "See: https://github.com/NVIDIA/cloud-native-docs/pull/260"
-    info "SKIP: MIG test skipped due to CDMM"
-    exit 2
-  fi
-}

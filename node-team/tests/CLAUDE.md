@@ -42,7 +42,7 @@ trap cleanup EXIT                       # auto-cleanup on exit
 2. **Own namespace** — every test creates a unique namespace and cleans it up via trap
 3. **Inline YAML** — pod/claim manifests are embedded in the script via `apply_yaml` heredocs, not separate files
 4. **Exit code** — 0 = pass, non-zero = fail
-5. **Dependencies** — some tests depend on prior state (e.g., MIG must be enabled). Dependencies are documented in script headers and enforced with pre-checks.
+5. **Dependencies** — some tests depend on prior state (e.g., MPS must be enabled). Dependencies are documented in script headers and enforced with pre-checks.
 
 ### run-all.sh:
 
@@ -52,7 +52,7 @@ Each test suite has a `run-all.sh` that:
 - Tracks pass/fail per test
 - Prints a summary at the end
 
-The test scripts are sorted lexicographically, so `test-1.1` runs before `test-1.2`, etc. This matters because some tests have sequential dependencies (e.g., 1.4 enables MIG, 1.5 uses it).
+The test scripts are sorted lexicographically, so `test-1.1` runs before `test-1.2`, etc. This matters because some tests have sequential dependencies (e.g., 1.6 enables MPS, 1.7 uses it).
 
 ## Ordering & Dependencies
 
@@ -61,9 +61,7 @@ The test scripts are sorted lexicographically, so `test-1.1` runs before `test-1
 1.1  GPU operator health     <- no deps
 1.2  Basic GPU               <- needs operator running
 1.3  Multi-GPU               <- needs >=2 GPUs (skips gracefully if not)
-1.4  MIG enable              <- modifies node state (labels node)
-1.5  MIG workload            <- depends on 1.4 (MIG must be on)
-1.6  MPS enable              <- disables MIG first, then enables MPS
+1.6  MPS enable              <- enables MPS
 1.7  MPS concurrent          <- depends on 1.6 (MPS must be on)
 1.8  CRI-O + crun            <- no deps (verification only)
 1.9  Topology manager        <- needs KubeletConfig (informational if not set)
@@ -77,12 +75,8 @@ The test scripts are sorted lexicographically, so `test-1.1` runs before `test-1
 2.2  DeviceClass discovery   <- no deps
 2.3  Full GPU                <- basic DRA test
 2.4  Device sharing          <- basic DRA test
-2.5  MIG via DRA             <- enables MIG via node label
-2.6  MPS via DRA             <- disables MIG first
+2.6  MPS via DRA             <- no deps
 2.7  Attribute selection     <- no deps (uses CEL productName filter)
-2.8  Preferred device        <- enables MIG
-2.9  Fallback                <- enables MIG (all-1g.5gb)
-2.10 Full exhaustion         <- no deps (uses impossible selector)
 2.11 Admin access            <- namespace must have admin-access label
 2.12 Admin negative          <- namespace must NOT have label
 2.13 CRI-O + crun + DRA     <- verification
@@ -98,11 +92,6 @@ Several tests accept env vars for hardware adaptation:
 
 | Variable | Default | Used by |
 |----------|---------|---------|
-| `MIG_PROFILE` | `all-1g.5gb` | test-1.4, test-2.5, test-2.8, test-2.9 |
-| `MIG_PROFILE_SMALL` | `1g.5gb` | test-1.5, test-2.5, test-2.8, test-2.9 |
-| `MIG_PROFILE_MEDIUM` | `3g.20gb` | test-2.8 |
-| `MIG_PROFILE_LARGE` | `7g.40gb` | test-2.9 |
-| `MIG_RESOURCE` | `nvidia.com/mig-1g.5gb` | test-1.5 |
 | `MPS_REPLICAS` | `4` | test-1.6 |
 | `GPU_PRODUCT_PATTERN` | `a100` | test-2.7 |
 | `GPU_EXPECTED_ARCH` | _(empty)_ | test-2.1 |
@@ -118,11 +107,6 @@ tests/dra/run-all.sh
 ### GB200 / Voyager (RHCOS4NV)
 ```bash
 export DRIVER_PREINSTALLED=true
-export MIG_PROFILE=all-1g.24gb
-export MIG_PROFILE_SMALL=1g.24gb
-export MIG_PROFILE_MEDIUM=3g.95gb
-export MIG_PROFILE_LARGE=7g.189gb
-export MIG_RESOURCE=nvidia.com/mig-1g.24gb
 export GPU_PRODUCT_PATTERN=gb200
 export GPU_EXPECTED_ARCH=Blackwell
 export GPU_EXPECTED_CUDA_CAP=10.0.0
@@ -155,13 +139,10 @@ If `run-all.sh` itself exits non-zero, at least one test failed.
 
 1. **Read the test output** — the error message (in red `[ERROR]`) tells you what assertion failed
 2. **Check test-specific troubleshooting** — see `device-plugin/CLAUDE.md` or `dra/CLAUDE.md` for known issues per test
-3. **Check for leftover state** — a previous test may have left MIG enabled or namespaces leaked:
+3. **Check for leftover state** — a previous test may have left namespaces leaked:
    ```bash
    # Check for leftover namespaces
    oc get ns | grep -E '^test-(dp|dra)-'
-   # Check MIG state
-   GPU_NODE=$(oc get nodes -l feature.node.kubernetes.io/pci-0302_10de.present=true -o jsonpath='{.items[0].metadata.name}')
-   oc get node $GPU_NODE -o jsonpath='{.metadata.labels}' | python3 -m json.tool | grep mig
    ```
 4. **Clean up and retry the single test**:
    ```bash
